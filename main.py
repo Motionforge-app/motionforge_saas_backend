@@ -11,25 +11,16 @@ import stripe
 # -----------------------------
 
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
 
 if not STRIPE_SECRET_KEY:
     print("⚠️  WARNING: STRIPE_SECRET_KEY is empty. Set this in your environment on Railway.")
 
+if not STRIPE_WEBHOOK_SECRET:
+    print("⚠️  WARNING: STRIPE_WEBHOOK_SECRET is empty. Set this in your environment on Railway.")
+
 stripe.api_key = STRIPE_SECRET_KEY
 
-# Product IDs uit Stripe
-STARTER_PRODUCT_ID = "prod_TZFGV6Nu3UQEc7"   # 10 credits
-CREATOR_PRODUCT_ID = "prod_TZFHGFhubDsPxW"  # 50 credits
-PRO_PRODUCT_ID     = "prod_TZFIHWyJ6O9yo8"  # 250 credits
-
-PRODUCT_CREDITS: Dict[str, int] = {
-    STARTER_PRODUCT_ID: 10,
-    CREATOR_PRODUCT_ID: 50,
-    PRO_PRODUCT_ID: 250,
-}
-
-CUSTOMER_CREDITS_FIELD = "mf_credits"
-CUSTOMER_LAST_SESSION_FIELD = "mf_last_session_id"
 
 # -----------------------------
 # FASTAPI APP
@@ -192,7 +183,8 @@ import os
 from fastapi import Request, HTTPException
 
 # Zet je Stripe secret key
-stripe.api_key = "YOUR_STRIPE_SECRET_KEY"
+stripe.api_key = STRIPE_SECRET_KEY
+
 
 # Path voor credits storage
 CREDITS_FILE = "credits.json"
@@ -213,8 +205,8 @@ async def stripe_webhook(request: Request):
     payload = await request.body()
     sig_header = request.headers.get("stripe-signature")
 
-    # VERVANG DOOR JOUW EIGEN STRIPE WEBHOOK SECRET
-    endpoint_secret = whsec_k8BGx8io283ZOgJfManLPGax93TcyOED
+       endpoint_secret = STRIPE_WEBHOOK_SECRET
+
 
     try:
         event = stripe.Webhook.construct_event(
