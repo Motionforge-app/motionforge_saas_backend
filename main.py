@@ -186,3 +186,63 @@ async def process_clip(session_id: str, file: UploadFile = File(...)):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+import stripe
+import json
+import os
+from fastapi import Request, HTTPException
+
+# Zet je Stripe secret key
+stripe.api_key = "YOUR_STRIPE_SECRET_KEY"
+
+# Path voor credits storage
+CREDITS_FILE = "credits.json"
+
+def load_credits():
+    if not os.path.exists(CREDITS_FILE):
+        return {}
+    with open(CREDITS_FILE, "r") as f:
+        return json.load(f)
+
+def save_credits(data):
+    with open(CREDITS_FILE, "w") as f:
+        json.dump(data, f, indent=4)
+
+
+@app.post("/stripe/webhook")
+async def stripe_webhook(request: Request):
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature")
+
+    # VERVANG DOOR JOUW EIGEN STRIPE WEBHOOK SECRET
+    endpoint_secret = whsec_k8BGx8io283ZOgJfManLPGax93TcyOED
+
+    try:
+        event = stripe.Webhook.construct_event(
+            payload, sig_header, endpoint_secret
+        )
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid payload")
+    except stripe.error.SignatureVerificationError:
+        raise HTTPException(status_code=400, detail="Invalid signature")
+
+    # Alleen reageren op betalingen die succesvol zijn
+    if event["type"] == "checkout.session.completed":
+        session = event["data"]["object"]
+
+        # Email van de koper
+        customer_email = session.get("customer_details", {}).get("email")
+
+        if not customer_email:
+            return {"status": "no email found"}
+
+        # Credits toevoegen
+        credits = load_credits()
+        current = credits.get(customer_email, 0)
+        credits[customer_email] = current + 10  # aantal credits per aankoop
+
+        save_credits(credits)
+
+        print(f"Credits toegevoegd aan {customer_email}. Nieuw totaal: {credits[customer_email]}")
+
+    return {"status": "success"}
+
