@@ -81,7 +81,13 @@ async def upload_video(file: UploadFile = File(...)):
             raise HTTPException(status_code=400, detail="Invalid file format.")
 
         file_id = str(uuid.uuid4())
-        input_path = f"{BASE_DIR}/{file_id}.mp4"
+
+        # Gebruik altijd de echte extensie in lowercase (.mp4, .mov, .mkv)
+        ext = os.path.splitext(file.filename)[1].lower()
+        if ext not in [".mp4", ".mov", ".mkv"]:
+            ext = ".mp4"
+
+        input_path = os.path.join(BASE_DIR, f"{file_id}{ext}")
 
         with open(input_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
@@ -99,7 +105,12 @@ async def upload_video(file: UploadFile = File(...)):
 @app.post("/split/{file_id}")
 async def split_endpoint(file_id: str):
     try:
-        input_path = f"{BASE_DIR}/{file_id}.mp4"
+        # Zoek het bestand ongeacht de extensie (.mp4, .MP4, .mov, etc.)
+        possible_files = [f for f in os.listdir(BASE_DIR) if f.startswith(file_id)]
+        if not possible_files:
+            raise HTTPException(status_code=404, detail="File not found")
+
+        input_path = os.path.join(BASE_DIR, possible_files[0])
 
         if not os.path.exists(input_path):
             raise HTTPException(status_code=404, detail="File not found")
