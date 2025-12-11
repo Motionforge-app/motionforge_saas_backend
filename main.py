@@ -1,11 +1,15 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 import uuid
 import os
 import shutil
 import logging
 from moviepy.video.io.VideoFileClip import VideoFileClip
+import imageio_ffmpeg  # NEW
+
+# Register FFmpeg binary for MoviePy (required on Railway)
+os.environ["FFMPEG_BINARY"] = imageio_ffmpeg.get_ffmpeg_exe()
 
 app = FastAPI()
 
@@ -83,6 +87,7 @@ async def upload_video(file: UploadFile = File(...)):
             shutil.copyfileobj(file.file, buffer)
 
         return {"file_id": file_id, "message": "Upload successful"}
+
     except Exception as e:
         logging.error(f"Upload failed: {e}")
         raise HTTPException(status_code=500, detail="Upload failed")
