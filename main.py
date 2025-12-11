@@ -1,240 +1,161 @@
-import os
-from typing import Dict
-
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-import stripe
+from fastapi.responses import FileResponse, JSONResponse
+import uuid
+import os
+import shutil
+import logging
+from moviepy.video.io.VideoFileClip import VideoFileClip
 
-# -----------------------------
-# CONFIG
-# -----------------------------
+app = FastAPI()
 
-STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
-STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
-
-if not STRIPE_SECRET_KEY:
-    print("⚠️  WARNING: STRIPE_SECRET_KEY is empty. Set this in your environment on Railway.")
-
-if not STRIPE_WEBHOOK_SECRET:
-    print("⚠️  WARNING: STRIPE_WEBHOOK_SECRET is empty. Set this in your environment on Railway.")
-
-stripe.api_key = STRIPE_SECRET_KEY
-
-
-# -----------------------------
-# FASTAPI APP
-# -----------------------------
-
-app = FastAPI(title="MotionForge SAAS Backend")
-
-origins = [
-    "https://getmotionforge.com",
-    "https://www.getmotionforge.com",
-    "http://localhost:5173",
-    "http://127.0.0.1:8000",
-]
-
+# Allow frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# Logging
+logging.basicConfig(level=logging.INFO)
 
-# -----------------------------
-# HELPERS
-# -----------------------------
+# File paths
+BASE_DIR = "outputs"
+os.makedirs(BASE_DIR, exist_ok=True)
 
-def _parse_int(value, default: int = 0) -> int:
+
+# -----------------------
+# Helper function: split
+# -----------------------
+def split_video(input_path: str, output_dir: str, clip_length: int = 15):
     try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
+        video = VideoFileClip(input_path)
+        duration = int(video.duration)
 
+        clips = []
 
-def ensure_credits_for_session(session_id: str):
-    """
-    Haal Stripe Checkout Session op, koppel aan Customer en zorg dat
-    credits uit deze sessie maar één keer toegevoegd worden.
-    """
-    try:
-        session = stripe.checkout.Session.retrieve(
-            session_id,
-            expand=["line_items.data.price.product"]
-        )
+        start = 0
+        index = 1
+
+        while start < duration:
+            end = min(start + clip_length, duration)
+
+            output_path = os.path.join(output_dir, f"clip_{index}.mp4")
+
+            # MoviePy write settings COMPACT & Railway-safe
+            subclip = video.subclip(start, end)
+            subclip.write_videofile(
+                output_path,
+                codec="libx264",
+                audio_codec="aac",
+                temp_audiofile=f"{output_dir}/temp_audio_{index}.m4a",
+                remove_temp=True,
+                threads=1
+            )
+
+            clips.append(output_path)
+
+            start += clip_length
+            index += 1
+
+        video.close()
+        return clips
+
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid session_id: {str(e)}")
-
-    customer_id = session.get("customer")
-    if not customer_id:
-        raise HTTPException(status_code=400, detail="No customer for this session")
-
-    customer = stripe.Customer.retrieve(customer_id)
-    metadata = customer.get("metadata", {}) or {}
-
-    current_credits = _parse_int(metadata.get(CUSTOMER_CREDITS_FIELD, 0))
-    last_session_id = metadata.get(CUSTOMER_LAST_SESSION_FIELD)
-
-    # Nog niet verwerkt? Dan credits toevoegen
-    if last_session_id != session_id:
-        line_items = session.get("line_items", {}).get("data", [])
-        added_credits = 0
-
-        for item in line_items:
-            price = item.get("price", {})
-            product = price.get("product")
-            quantity = item.get("quantity", 1)
-            if product in PRODUCT_CREDITS:
-                added_credits += PRODUCT_CREDITS[product] * (quantity or 1)
-
-        if added_credits > 0:
-            new_total = current_credits + added_credits
-            new_metadata = {
-                **metadata,
-                CUSTOMER_CREDITS_FIELD: str(new_total),
-                CUSTOMER_LAST_SESSION_FIELD: session_id,
-            }
-            customer = stripe.Customer.modify(customer_id, metadata=new_metadata)
-            current_credits = new_total
-
-    return customer, current_credits
+        logging.error(f"Error splitting video: {e}")
+        raise
 
 
-def update_customer_credits(customer: stripe.Customer, new_credits: int) -> stripe.Customer:
-    metadata = customer.get("metadata", {}) or {}
-    new_metadata = {
-        **metadata,
-        CUSTOMER_CREDITS_FIELD: str(max(new_credits, 0)),
-    }
-    return stripe.Customer.modify(customer.id, metadata=new_metadata)
-
-
-# -----------------------------
-# MODELS
-# -----------------------------
-
-class CreditsResponse(BaseModel):
-    credits: int
-
-
-class StatusResponse(BaseModel):
-    message: str
-    credits: int
-
-
-# -----------------------------
-# ENDPOINTS
-# -----------------------------
-
-@app.get("/health")
-def health():
-    return {"status": "ok", "service": "motionforge_saas_backend"}
-
-
-@app.get("/check_credits", response_model=CreditsResponse)
-def check_credits(session_id: str):
-    """
-    Wordt aangeroepen door tool.html om credit-saldo op te halen.
-    """
-    if not session_id:
-        raise HTTPException(status_code=400, detail="Missing session_id")
-
-    customer, current_credits = ensure_credits_for_session(session_id)
-    return CreditsResponse(credits=current_credits)
-
-
-@app.post("/process_clip", response_model=StatusResponse)
-async def process_clip(session_id: str, file: UploadFile = File(...)):
-    """
-    Verwerkt één clip en trekt 1 credit af.
-    Hier komt later jouw echte MotionForge-verwerkingslogica.
-    """
-    if not session_id:
-        raise HTTPException(status_code=400, detail="Missing session_id")
-
-    customer, current_credits = ensure_credits_for_session(session_id)
-
-    if current_credits <= 0:
-        raise HTTPException(status_code=402, detail="You have no credits left. Please buy more credits.")
-
-    # TODO: hier je echte video-verwerking:
-    # contents = await file.read()
-    # ... verwerk contents met MotionForge ...
-    # output_path = ...
-
-    new_credits = current_credits - 1
-    update_customer_credits(customer, new_credits)
-
-    return StatusResponse(
-        message="Clip processed successfully. 1 credit used.",
-        credits=new_credits,
-    )
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
-import stripe
-import json
-import os
-from fastapi import Request, HTTPException
-
-# Zet je Stripe secret key
-stripe.api_key = STRIPE_SECRET_KEY
-
-
-# Path voor credits storage
-CREDITS_FILE = "credits.json"
-
-def load_credits():
-    if not os.path.exists(CREDITS_FILE):
-        return {}
-    with open(CREDITS_FILE, "r") as f:
-        return json.load(f)
-
-def save_credits(data):
-    with open(CREDITS_FILE, "w") as f:
-        json.dump(data, f, indent=4)
-
-
-@app.post("/stripe/webhook")
-async def stripe_webhook(request: Request):
-    payload = await request.body()
-    sig_header = request.headers.get("stripe-signature")
-
-       endpoint_secret = STRIPE_WEBHOOK_SECRET
-
-
+# -----------------------------------
+# Upload endpoint
+# -----------------------------------
+@app.post("/upload")
+async def upload_video(file: UploadFile = File(...)):
     try:
-        event = stripe.Webhook.construct_event(
-            payload, sig_header, endpoint_secret
-        )
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid payload")
-    except stripe.error.SignatureVerificationError:
-        raise HTTPException(status_code=400, detail="Invalid signature")
+        if not file.filename.lower().endswith((".mp4", ".mov", ".mkv")):
+            raise HTTPException(status_code=400, detail="Invalid file format.")
 
-    # Alleen reageren op betalingen die succesvol zijn
-    if event["type"] == "checkout.session.completed":
-        session = event["data"]["object"]
+        file_id = str(uuid.uuid4())
+        input_path = f"{BASE_DIR}/{file_id}.mp4"
 
-        # Email van de koper
-        customer_email = session.get("customer_details", {}).get("email")
+        with open(input_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
 
-        if not customer_email:
-            return {"status": "no email found"}
+        return {"file_id": file_id, "message": "Upload successful"}
+    except Exception as e:
+        logging.error(f"Upload failed: {e}")
+        raise HTTPException(status_code=500, detail="Upload failed")
 
-        # Credits toevoegen
-        credits = load_credits()
-        current = credits.get(customer_email, 0)
-        credits[customer_email] = current + 10  # aantal credits per aankoop
 
-        save_credits(credits)
+# -----------------------------------
+# Split endpoint
+# -----------------------------------
+@app.post("/split/{file_id}")
+async def split_endpoint(file_id: str):
+    try:
+        input_path = f"{BASE_DIR}/{file_id}.mp4"
 
-        print(f"Credits toegevoegd aan {customer_email}. Nieuw totaal: {credits[customer_email]}")
+        if not os.path.exists(input_path):
+            raise HTTPException(status_code=404, detail="File not found")
 
-    return {"status": "success"}
+        output_dir = os.path.join(BASE_DIR, f"{file_id}_clips")
+        os.makedirs(output_dir, exist_ok=True)
 
+        # Perform split
+        clips = split_video(input_path, output_dir)
+
+        # List downloadable files
+        download_urls = [
+            f"/download/{file_id}/{os.path.basename(clip)}" for clip in clips
+        ]
+
+        return {"clips": download_urls}
+
+    except Exception as e:
+        logging.error(f"Split failed: {e}")
+        raise HTTPException(status_code=500, detail="Split error")
+
+
+# -----------------------------------
+# Download endpoint
+# -----------------------------------
+@app.get("/download/{file_id}/{filename}")
+async def download_clip(file_id: str, filename: str):
+    file_path = os.path.join(BASE_DIR, f"{file_id}_clips", filename)
+
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Clip not found")
+
+    return FileResponse(path=file_path, filename=filename, media_type='video/mp4')
+
+
+# -----------------------------------
+# Placeholder endpoint for credits
+# -----------------------------------
+@app.get("/credits/{user_id}")
+async def get_credits(user_id: str):
+    return {"user_id": user_id, "credits": 97}  # later DB-powered
+
+
+# -----------------------------------
+# Placeholder endpoint for AI
+# -----------------------------------
+@app.post("/ai/captions")
+async def ai_captions(data: dict):
+    text = data.get("text", "")
+    return {
+        "hooks": [
+            f"Hook idea based on: {text}",
+            f"Alternative hook for: {text}"
+        ],
+        "captions": [
+            f"Caption suggestion for: {text}"
+        ],
+        "hashtags": ["#motionforge", "#ai", "#shorts"]
+    }
+
+
+@app.get("/")
+def root():
+    return {"status": "ok", "service": "motionforge_backend"}
