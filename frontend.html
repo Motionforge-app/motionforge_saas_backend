@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>MotionForge – Local Frontend</title>
+</head>
+<body>
+
+<h2>MotionForge – Test Frontend</h2>
+
+<label>Email</label><br>
+<input id="email" value="motionforge-tester@example.com"><br><br>
+
+<label>Video path</label><br>
+<input id="video" value="uploads/mf_A_clip0.mp4"><br><br>
+
+<button onclick="startJob()">Start job</button>
+
+<pre id="log"></pre>
+<div id="results"></div>
+
+<script>
+let jobId = null;
+
+function log(t){ document.getElementById("log").textContent += t + "\n"; }
+
+function startJob(){
+  log("Starting job...");
+  fetch("http://127.0.0.1:8000/jobs",{
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
+    body:JSON.stringify({
+      email:document.getElementById("email").value,
+      video_path:document.getElementById("video").value,
+      top_n:3,
+      export_top_only:true,
+      analysis_cost_per_segment:1,
+      export_cost_per_mp4:5,
+      aspect:"vertical"
+    })
+  }).then(r=>r.json()).then(d=>{
+    jobId=d.job_id;
+    log("Job ID: "+jobId);
+    poll();
+  });
+}
+
+function poll(){
+  fetch("http://127.0.0.1:8000/status/"+jobId)
+  .then(r=>r.json())
+  .then(s=>{
+    if(s.status!=="done"){ setTimeout(poll,1000); return; }
+    log("Done. Loading outputs...");
+    loadOutputs(s);
+  });
+}
+
+function loadOutputs(status){
+  fetch("http://127.0.0.1:8000/outputs/"+jobId)
+  .then(r=>r.json())
+  .then(o=>{
+    o.files.forEach(f=>{
+      if(f.type==="mp4"){
+        const v=document.createElement("video");
+        v.controls=true;
+        v.src="http://127.0.0.1:8000"+f.url;
+        document.getElementById("results").appendChild(v);
+      }
+    });
+    if(status.upsell){
+      log("UPSSELL TRIGGERED");
+    }
+  });
+}
+</script>
+
+</body>
+</html>
+

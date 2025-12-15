@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Env
+.env
+.env.*
+
+# OS
+.DS_Store
+
+# Runtime data
+data/
+uploads/
+outputs/
+test.db
+
