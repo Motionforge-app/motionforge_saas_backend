@@ -831,3 +831,11 @@ def get_output_file(filename: str):
         media_type="application/octet-stream",
     )
 
+@app.get("/")
+def root():
+    return {
+        "status": "ok",
+        "service": "motionforge_saas_backend",
+        "message": "MotionForge backend is running"
+    }
+
