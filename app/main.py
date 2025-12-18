@@ -12,6 +12,7 @@ from typing import Optional, Dict, Any, List, Literal, Tuple
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 # Optional deps
@@ -31,6 +32,9 @@ try:
 except Exception:
     stripe = None
 
+# DB (persistent credits)
+from app.database import init_db, SessionLocal, User
+
 
 APP_NAME = "motionforge_saas_backend"
 
@@ -42,9 +46,8 @@ OUTPUTS_DIR = DATA_DIR / "outputs"
 for d in [DATA_DIR, JOBS_DIR, OUTPUTS_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
-# In-memory stores (MVP)
+# In-memory store for jobs only (credits are persistent)
 JOBS: Dict[str, Dict[str, Any]] = {}
-USERS: Dict[str, Dict[str, Any]] = {}  # {"email": {"credits": int, "updated_at": float}}
 
 app = FastAPI(title=APP_NAME)
 app.add_middleware(
@@ -55,9 +58,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Initialize DB tables on startup
+@app.on_event("startup")
+def _startup():
+    init_db()
+
+
 # -----------------------------
 # Stripe defaults (TEST)
-# These are YOUR confirmed Stripe TEST price IDs.
 # -----------------------------
 TEST_PRICE_IDS = {
     "starter": "price_1SdTz22L998MB1DPQbq4fN4b",  # 50 credits + course ($97)
@@ -71,41 +79,110 @@ DEFAULT_PACK_CREDITS = {
     "pro": 500,
 }
 
+
 # -----------------------------
-# Helpers / Credits
+# Helpers / Credits (PERSISTENT)
 # -----------------------------
 def now_ts() -> float:
     return time.time()
 
+def _db_get_or_create_user(email: str) -> User:
+    email = email.strip().lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="email is required")
+
+    db = SessionLocal()
+    try:
+        u = db.get(User, email)
+        if u is None:
+            u = User(email=email, credits=0, updated_at=now_ts())
+            db.add(u)
+            db.commit()
+            db.refresh(u)
+        return u
+    finally:
+        db.close()
+
 def ensure_user(email: str) -> None:
-    if email not in USERS:
-        USERS[email] = {"credits": 0, "updated_at": now_ts()}
+    _db_get_or_create_user(email)
 
 def get_credits(email: str) -> int:
-    ensure_user(email)
-    return int(USERS[email]["credits"])
+    db = SessionLocal()
+    try:
+        email = email.strip().lower()
+        u = db.get(User, email)
+        if u is None:
+            u = User(email=email, credits=0, updated_at=now_ts())
+            db.add(u)
+            db.commit()
+            db.refresh(u)
+        return int(u.credits or 0)
+    finally:
+        db.close()
 
 def set_credits(email: str, credits: int) -> None:
-    ensure_user(email)
-    USERS[email]["credits"] = int(max(0, credits))
-    USERS[email]["updated_at"] = now_ts()
+    db = SessionLocal()
+    try:
+        email = email.strip().lower()
+        u = db.get(User, email)
+        if u is None:
+            u = User(email=email, credits=0, updated_at=now_ts())
+            db.add(u)
+            db.commit()
+            db.refresh(u)
+
+        u.credits = int(max(0, int(credits)))
+        u.updated_at = now_ts()
+        db.add(u)
+        db.commit()
+    finally:
+        db.close()
 
 def add_credits(email: str, delta: int) -> None:
-    ensure_user(email)
-    USERS[email]["credits"] = int(max(0, USERS[email]["credits"] + int(delta)))
-    USERS[email]["updated_at"] = now_ts()
+    db = SessionLocal()
+    try:
+        email = email.strip().lower()
+        u = db.get(User, email)
+        if u is None:
+            u = User(email=email, credits=0, updated_at=now_ts())
+            db.add(u)
+            db.commit()
+            db.refresh(u)
+
+        u.credits = int(max(0, int(u.credits or 0) + int(delta)))
+        u.updated_at = now_ts()
+        db.add(u)
+        db.commit()
+    finally:
+        db.close()
 
 def deduct_credits(email: str, delta: int) -> None:
-    ensure_user(email)
-    cur = int(USERS[email]["credits"])
-    nxt = cur - int(delta)
-    if nxt < 0:
-        raise HTTPException(status_code=402, detail=f"insufficient credits: have {cur}, need {delta}")
-    USERS[email]["credits"] = nxt
-    USERS[email]["updated_at"] = now_ts()
+    db = SessionLocal()
+    try:
+        email = email.strip().lower()
+        u = db.get(User, email)
+        if u is None:
+            u = User(email=email, credits=0, updated_at=now_ts())
+            db.add(u)
+            db.commit()
+            db.refresh(u)
+
+        cur = int(u.credits or 0)
+        need = int(delta)
+        nxt = cur - need
+        if nxt < 0:
+            raise HTTPException(status_code=402, detail=f"insufficient credits: have {cur}, need {need}")
+
+        u.credits = int(nxt)
+        u.updated_at = now_ts()
+        db.add(u)
+        db.commit()
+    finally:
+        db.close()
+
 
 # -----------------------------
-# Stripe mode + price lookup (NO double work)
+# Stripe mode + price lookup
 # -----------------------------
 def get_stripe_mode() -> Literal["test", "live", "disabled"]:
     key = os.getenv("STRIPE_SECRET_KEY", "").strip()
@@ -129,11 +206,6 @@ def pack_credits(pack_id: str) -> int:
     return int(DEFAULT_PACK_CREDITS.get(pack_id, 0))
 
 def price_id_for_pack(pack_id: str) -> Optional[str]:
-    """
-    Priority:
-    - If LIVE: read env PRICE_ID_LIVE_*
-    - If TEST: read env PRICE_ID_TEST_* else fallback to your confirmed TEST ids above
-    """
     mode = get_stripe_mode()
     pack_id = pack_id.lower()
 
@@ -145,7 +217,6 @@ def price_id_for_pack(pack_id: str) -> Optional[str]:
         pid = os.getenv(env_key)
         return pid.strip() if pid else None
 
-    # mode == "test"
     env_key = f"PRICE_ID_TEST_{pack_id.upper()}"
     pid = os.getenv(env_key)
     if pid and pid.strip():
@@ -167,6 +238,7 @@ def stripe_urls() -> Tuple[str, str]:
     success = os.getenv("STRIPE_SUCCESS_URL", "http://localhost:3000/success?session_id={CHECKOUT_SESSION_ID}")
     cancel = os.getenv("STRIPE_CANCEL_URL", "http://localhost:3000/cancel")
     return success, cancel
+
 
 # -----------------------------
 # Models
@@ -194,6 +266,7 @@ class CreateJobRequest(BaseModel):
 class CreateJobResponse(BaseModel):
     ok: bool
     job_id: str
+
 
 # -----------------------------
 # Utility
@@ -267,6 +340,7 @@ def generate_sliding_segments(duration_s: float, seg_len_s: float, seg_step_s: f
         t += seg_step_s
     return segs
 
+
 # -----------------------------
 # Upsell (A): only when exports blocked
 # -----------------------------
@@ -278,7 +352,7 @@ def build_upsell_payload(missing_credits: int) -> Dict[str, Any]:
         packs.append({
             "pack_id": pid,
             "credits": pack_credits(pid),
-            "price_id": price_id_for_pack(pid),  # in TEST: always filled (fallback defaults)
+            "price_id": price_id_for_pack(pid),
             "mode": mode,
         })
 
@@ -292,6 +366,7 @@ def build_upsell_payload(missing_credits: int) -> Dict[str, Any]:
         "message": "You unlocked more high-performing clips. Add credits to export them.",
         "checkout_endpoint": "/stripe/create-checkout-session?email=YOUR_EMAIL&pack_id=starter|creator|pro",
     }
+
 
 # -----------------------------
 # Audio features
@@ -368,6 +443,7 @@ def audio_features(video_path: str, start_s: float, end_s: float) -> Dict[str, f
         except Exception:
             pass
 
+
 # -----------------------------
 # Motion features
 # -----------------------------
@@ -423,6 +499,7 @@ def motion_score(video_path: str, start_s: float, end_s: float) -> Dict[str, flo
     finally:
         cap.release()
 
+
 # -----------------------------
 # Captions decision
 # -----------------------------
@@ -461,6 +538,7 @@ def decide_captions_mode(features: Dict[str, float]) -> Dict[str, Any]:
             "audio_delta": round(float(audio_delta), 4),
         },
     }
+
 
 # -----------------------------
 # Rendering
@@ -504,6 +582,7 @@ def write_metadata_json(job_id: str, idx: int, payload: Dict[str, Any]) -> str:
     out_json = OUTPUTS_DIR / f"{clip_id}.json"
     out_json.write_text(json.dumps(payload, indent=2))
     return str(out_json)
+
 
 # -----------------------------
 # Job runner (credits + upsell A)
@@ -640,6 +719,7 @@ def run_job(job_id: str) -> None:
     job["progress"] = 1.0
     job["updated_at"] = now_ts()
 
+
 # -----------------------------
 # API
 # -----------------------------
@@ -647,21 +727,25 @@ def run_job(job_id: str) -> None:
 def health() -> Dict[str, Any]:
     return {"status": "ok", "service": APP_NAME, "stripe_mode": get_stripe_mode()}
 
-# Credits endpoints (local testing)
+@app.get("/")
+def root():
+    return {"status": "ok", "service": APP_NAME, "message": "MotionForge backend is running"}
+
+# Credits endpoints (persistent)
 @app.get("/credits")
 def credits_get(email: str = Query(...)) -> Dict[str, Any]:
     ensure_user(email)
-    return {"ok": True, "email": email, "credits": get_credits(email)}
+    return {"ok": True, "email": email.strip().lower(), "credits": get_credits(email)}
 
 @app.post("/credits/add")
 def credits_add(email: str = Query(...), amount: int = Query(...)) -> Dict[str, Any]:
     add_credits(email, int(amount))
-    return {"ok": True, "email": email, "credits": get_credits(email)}
+    return {"ok": True, "email": email.strip().lower(), "credits": get_credits(email)}
 
 @app.post("/credits/set")
 def credits_set(email: str = Query(...), credits: int = Query(...)) -> Dict[str, Any]:
     set_credits(email, int(credits))
-    return {"ok": True, "email": email, "credits": get_credits(email)}
+    return {"ok": True, "email": email.strip().lower(), "credits": get_credits(email)}
 
 # Stripe: create checkout session for a pack_id (starter/creator/pro)
 @app.post("/stripe/create-checkout-session")
@@ -696,7 +780,7 @@ def stripe_create_checkout_session(
     )
     return {"ok": True, "checkout_url": session.url, "mode": mode, "pack_id": pack_id, "price_id": pid}
 
-# Stripe webhook (minimal): credits user on successful checkout
+# Stripe webhook: credits user on successful checkout
 @app.post("/stripe/webhook")
 async def stripe_webhook(request: Request) -> Dict[str, Any]:
     stripe_enabled_or_throw()
@@ -716,7 +800,6 @@ async def stripe_webhook(request: Request) -> Dict[str, Any]:
         md = session.get("metadata", {}) or {}
         email = (md.get("email") or "").strip().lower()
         credits = int(md.get("credits") or "0")
-
         if email and credits > 0:
             add_credits(email, credits)
 
@@ -791,13 +874,11 @@ def job_status(job_id: str) -> Dict[str, Any]:
     if not job:
         raise HTTPException(status_code=404, detail="job not found")
     return {"ok": True, **job}
-from fastapi.responses import FileResponse
-from pathlib import Path
+
 
 # -----------------------------
 # Serve outputs (read-only)
 # -----------------------------
-
 @app.get("/outputs/{job_id}")
 def list_outputs(job_id: str):
     files = []
@@ -811,17 +892,11 @@ def list_outputs(job_id: str):
     if not files:
         raise HTTPException(status_code=404, detail="no outputs for this job")
 
-    return {
-        "ok": True,
-        "job_id": job_id,
-        "files": files,
-    }
-
+    return {"ok": True, "job_id": job_id, "files": files}
 
 @app.get("/outputs/file/{filename}")
 def get_output_file(filename: str):
     p = OUTPUTS_DIR / filename
-
     if not p.exists():
         raise HTTPException(status_code=404, detail="file not found")
 
@@ -830,12 +905,3 @@ def get_output_file(filename: str):
         filename=p.name,
         media_type="application/octet-stream",
     )
-
-@app.get("/")
-def root():
-    return {
-        "status": "ok",
-        "service": "motionforge_saas_backend",
-        "message": "MotionForge backend is running"
-    }
-

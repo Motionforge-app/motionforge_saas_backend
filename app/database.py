@@ -1,46 +1,25 @@
-from sqlalchemy import create_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
-import os
+from sqlalchemy import create_engine, Column, String, Integer, Float
+from sqlalchemy.orm import declarative_base, sessionmaker
+import time
+from pathlib import Path
 
-# ====================================================
-# DATABASE URL (Railway of lokale fallback)
-# ====================================================
+BASE_DIR = Path(__file__).resolve().parent.parent
+DB_PATH = BASE_DIR / "test.db"
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./test.db")
-
-# Voor PostgreSQL op Railway moet hij altijd eindigen op ?sslmode=require
-if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://")
-
-if "sslmode" not in DATABASE_URL:
-    DATABASE_URL += "?sslmode=require"
-
-# ====================================================
-# ENGINE
-# ====================================================
-
-engine = create_engine(
-    DATABASE_URL,
-    connect_args={}  # Railway heeft geen extra connect_args nodig
-)
-
-# ====================================================
-# SESSION
-# ====================================================
-
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-# ====================================================
-# BASE CLASS voor modellen
-# ====================================================
+engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 
 Base = declarative_base()
 
+class User(Base):
+    __tablename__ = "users"
 
-# ====================================================
-# Dependency: database session per request
-# ====================================================
+    email = Column(String, primary_key=True, index=True)
+    credits = Column(Integer, default=0)
+    updated_at = Column(Float, default=lambda: time.time())
+
+def init_db():
+    Base.metadata.create_all(bind=engine)
 
 def get_db():
     db = SessionLocal()
@@ -48,3 +27,4 @@ def get_db():
         yield db
     finally:
         db.close()
+
