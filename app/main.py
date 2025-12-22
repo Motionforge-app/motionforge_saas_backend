@@ -7,6 +7,9 @@ import time
 import shutil
 import wave
 import subprocess
+import base64
+import hmac
+import hashlib
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Literal, Tuple
 
@@ -50,9 +53,20 @@ for d in [DATA_DIR, JOBS_DIR, OUTPUTS_DIR]:
 JOBS: Dict[str, Dict[str, Any]] = {}
 
 app = FastAPI(title=APP_NAME)
+
+# -----------------------------
+# CORS (tighten)
+# -----------------------------
+def _cors_origins() -> List[str]:
+    raw = os.getenv("ALLOWED_ORIGINS", "").strip()
+    if raw:
+        return [x.strip() for x in raw.split(",") if x.strip()]
+    # sensible default for your setup
+    return ["https://www.getmotionforge.com"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten later
+    allow_origins=_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -182,6 +196,85 @@ def deduct_credits(email: str, delta: int) -> None:
 
 
 # -----------------------------
+# Token auth (HMAC-signed, no external libs)
+# -----------------------------
+TOKEN_TTL_SECONDS = int(os.getenv("ACCESS_TOKEN_TTL_SECONDS", "86400"))  # default 24h
+
+def _b64url_encode(b: bytes) -> str:
+    return base64.urlsafe_b64encode(b).decode("utf-8").rstrip("=")
+
+def _b64url_decode(s: str) -> bytes:
+    pad = "=" * ((4 - (len(s) % 4)) % 4)
+    return base64.urlsafe_b64decode((s + pad).encode("utf-8"))
+
+def _token_secret() -> bytes:
+    secret = os.getenv("ACCESS_TOKEN_SECRET", "").strip()
+    if not secret:
+        raise HTTPException(status_code=500, detail="ACCESS_TOKEN_SECRET not set")
+    return secret.encode("utf-8")
+
+def issue_token(email: str, ttl_seconds: int = TOKEN_TTL_SECONDS) -> Dict[str, Any]:
+    email = email.strip().lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="email is required for token")
+
+    exp = int(time.time()) + int(ttl_seconds)
+    payload = {"email": email, "exp": exp, "v": 1}
+    payload_bytes = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    payload_b64 = _b64url_encode(payload_bytes)
+
+    sig = hmac.new(_token_secret(), payload_b64.encode("utf-8"), hashlib.sha256).digest()
+    sig_b64 = _b64url_encode(sig)
+
+    token = f"{payload_b64}.{sig_b64}"
+    return {"token": token, "exp": exp, "email": email}
+
+def verify_token(token: str) -> Dict[str, Any]:
+    if not token or "." not in token:
+        raise HTTPException(status_code=401, detail="missing/invalid token")
+
+    payload_b64, sig_b64 = token.split(".", 1)
+    expected_sig = hmac.new(_token_secret(), payload_b64.encode("utf-8"), hashlib.sha256).digest()
+    expected_sig_b64 = _b64url_encode(expected_sig)
+
+    # constant-time compare
+    if not hmac.compare_digest(expected_sig_b64, sig_b64):
+        raise HTTPException(status_code=401, detail="invalid token signature")
+
+    try:
+        payload = json.loads(_b64url_decode(payload_b64).decode("utf-8"))
+    except Exception:
+        raise HTTPException(status_code=401, detail="invalid token payload")
+
+    exp = int(payload.get("exp") or 0)
+    if exp <= int(time.time()):
+        raise HTTPException(status_code=401, detail="token expired")
+
+    email = (payload.get("email") or "").strip().lower()
+    if not email:
+        raise HTTPException(status_code=401, detail="token missing email")
+
+    return payload
+
+def email_from_request_auth(request: Request) -> str:
+    auth = request.headers.get("authorization") or request.headers.get("Authorization") or ""
+    if not auth.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="missing Authorization: Bearer <token>")
+    token = auth.split(" ", 1)[1].strip()
+    payload = verify_token(token)
+    return payload["email"]
+
+
+def admin_guard(request: Request) -> None:
+    admin_key = os.getenv("ADMIN_API_KEY", "").strip()
+    if not admin_key:
+        raise HTTPException(status_code=500, detail="ADMIN_API_KEY not set")
+    supplied = request.headers.get("x-admin-key") or ""
+    if not hmac.compare_digest(supplied.strip(), admin_key):
+        raise HTTPException(status_code=401, detail="admin key required")
+
+
+# -----------------------------
 # Stripe mode + price lookup
 # -----------------------------
 def get_stripe_mode() -> Literal["test", "live", "disabled"]:
@@ -206,8 +299,8 @@ def stripe_enabled_or_throw() -> None:
     stripe.api_key = key
 
 def stripe_urls() -> Tuple[str, str]:
-    success = os.getenv("STRIPE_SUCCESS_URL", "http://localhost:3000/success?session_id={CHECKOUT_SESSION_ID}")
-    cancel = os.getenv("STRIPE_CANCEL_URL", "http://localhost:3000/cancel")
+    success = os.getenv("STRIPE_SUCCESS_URL", "https://www.getmotionforge.com/process.html?session_id={CHECKOUT_SESSION_ID}")
+    cancel = os.getenv("STRIPE_CANCEL_URL", "https://www.getmotionforge.com/cancel.html")
     return success, cancel
 
 def pack_credits(pack_id: str) -> int:
@@ -272,6 +365,7 @@ def _safe_email_from_session(session: Dict[str, Any]) -> str:
 Aspect = Literal["vertical", "square", "horizontal"]
 
 class CreateJobRequest(BaseModel):
+    # email will be ignored when using token auth
     email: str = Field(default="motionforge-tester@example.com")
     video_path: str
 
@@ -292,6 +386,15 @@ class CreateJobRequest(BaseModel):
 class CreateJobResponse(BaseModel):
     ok: bool
     job_id: str
+
+class IssueFromSessionRequest(BaseModel):
+    session_id: str = Field(..., min_length=10)
+
+class IssueFromSessionResponse(BaseModel):
+    ok: bool = True
+    token: str
+    exp: int
+    email: str
 
 
 # -----------------------------
@@ -749,34 +852,83 @@ def run_job(job_id: str) -> None:
 @app.get("/health")
 def health() -> Dict[str, Any]:
     m = load_price_to_credits_map()
-    return {"status": "ok", "service": APP_NAME, "stripe_mode": get_stripe_mode(), "refill_price_ids_loaded": list(m.keys())}
+    return {
+        "status": "ok",
+        "service": APP_NAME,
+        "stripe_mode": get_stripe_mode(),
+        "refill_price_ids_loaded": list(m.keys()),
+        "cors_origins": _cors_origins(),
+        "token_ttl_seconds": TOKEN_TTL_SECONDS,
+    }
 
 @app.get("/")
 def root():
     return {"status": "ok", "service": APP_NAME, "message": "MotionForge backend is running"}
 
-# Credits endpoints (persistent)
-@app.get("/credits")
-def credits_get(email: str = Query(...)) -> Dict[str, Any]:
-    ensure_user(email)
-    return {"ok": True, "email": email.strip().lower(), "credits": get_credits(email)}
 
+# -----------------------------
+# AUTH: Stripe session -> token  (Token Fix A)
+# -----------------------------
+@app.post("/auth/issue-from-session", response_model=IssueFromSessionResponse)
+def auth_issue_from_session(payload: IssueFromSessionRequest) -> IssueFromSessionResponse:
+    stripe_enabled_or_throw()
+
+    session_id = payload.session_id.strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id is required")
+
+    try:
+        sess = stripe.checkout.Session.retrieve(session_id)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"session lookup failed: {e}")
+
+    if not sess:
+        raise HTTPException(status_code=400, detail="session not found")
+
+    # Stripe fields to check:
+    status = (sess.get("status") or "").lower()               # often "complete"
+    payment_status = (sess.get("payment_status") or "").lower()  # "paid" if paid
+
+    if payment_status != "paid":
+        raise HTTPException(status_code=402, detail=f"payment not completed (payment_status={payment_status}, status={status})")
+
+    email = _safe_email_from_session(sess)
+    if not email:
+        raise HTTPException(status_code=400, detail="could not determine customer email from Stripe session")
+
+    ensure_user(email)  # user exists in DB
+    tok = issue_token(email=email, ttl_seconds=TOKEN_TTL_SECONDS)
+    return IssueFromSessionResponse(token=tok["token"], exp=tok["exp"], email=tok["email"])
+
+
+# -----------------------------
+# Credits (TOKEN-ONLY)
+# -----------------------------
+@app.get("/credits")
+def credits_get(request: Request) -> Dict[str, Any]:
+    email = email_from_request_auth(request)
+    ensure_user(email)
+    return {"ok": True, "email": email, "credits": get_credits(email)}
+
+# Admin-only (manual ops)
 @app.post("/credits/add")
-def credits_add(email: str = Query(...), amount: int = Query(...)) -> Dict[str, Any]:
+def credits_add(request: Request, email: str = Query(...), amount: int = Query(...)) -> Dict[str, Any]:
+    admin_guard(request)
     add_credits(email, int(amount))
     return {"ok": True, "email": email.strip().lower(), "credits": get_credits(email)}
 
 @app.post("/credits/set")
-def credits_set(email: str = Query(...), credits: int = Query(...)) -> Dict[str, Any]:
+def credits_set(request: Request, email: str = Query(...), credits: int = Query(...)) -> Dict[str, Any]:
+    admin_guard(request)
     set_credits(email, int(credits))
     return {"ok": True, "email": email.strip().lower(), "credits": get_credits(email)}
 
-# NEW: success-page helper (session_id -> email)
+
+# -----------------------------
+# Legacy helper: session_id -> email (keep for compatibility)
+# -----------------------------
 @app.get("/stripe/session-email")
 def stripe_session_email(session_id: str = Query(...)) -> Dict[str, Any]:
-    """
-    Used by success.html to redirect user to tool.html with prefilled email.
-    """
     stripe_enabled_or_throw()
     try:
         sess = stripe.checkout.Session.retrieve(session_id)
@@ -787,7 +939,10 @@ def stripe_session_email(session_id: str = Query(...)) -> Dict[str, Any]:
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"session lookup failed: {e}")
 
+
+# -----------------------------
 # Stripe: create checkout session for a pack_id (starter/creator/pro)
+# -----------------------------
 @app.post("/stripe/create-checkout-session")
 def stripe_create_checkout_session(
     email: str = Query(...),
@@ -820,7 +975,10 @@ def stripe_create_checkout_session(
     )
     return {"ok": True, "checkout_url": session.url, "mode": mode, "pack_id": pack_id, "price_id": pid}
 
+
+# -----------------------------
 # Stripe webhook: credits user on successful checkout
+# -----------------------------
 @app.post("/stripe/webhook")
 async def stripe_webhook(request: Request) -> Dict[str, Any]:
     stripe_enabled_or_throw()
@@ -869,11 +1027,13 @@ async def stripe_webhook(request: Request) -> Dict[str, Any]:
 
     return {"ok": True}
 
+
+# -----------------------------
+# Jobs (TOKEN-ONLY)
+# -----------------------------
 @app.post("/jobs", response_model=CreateJobResponse)
-def create_job(payload: CreateJobRequest) -> CreateJobResponse:
-    email = payload.email.strip().lower()
-    if not email:
-        raise HTTPException(status_code=400, detail="email is required")
+def create_job(request: Request, payload: CreateJobRequest) -> CreateJobResponse:
+    email = email_from_request_auth(request)
 
     video_path = payload.video_path.strip()
     if not video_path:
@@ -932,7 +1092,10 @@ def create_job(payload: CreateJobRequest) -> CreateJobResponse:
     return CreateJobResponse(ok=True, job_id=job_id)
 
 @app.get("/status/{job_id}")
-def job_status(job_id: str) -> Dict[str, Any]:
+def job_status(request: Request, job_id: str) -> Dict[str, Any]:
+    # token required to view job info (prevents leaking)
+    _ = email_from_request_auth(request)
+
     job = JOBS.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="job not found")
@@ -943,7 +1106,10 @@ def job_status(job_id: str) -> Dict[str, Any]:
 # Serve outputs (read-only)
 # -----------------------------
 @app.get("/outputs/{job_id}")
-def list_outputs(job_id: str):
+def list_outputs(request: Request, job_id: str):
+    # token required
+    _ = email_from_request_auth(request)
+
     files = []
     for p in OUTPUTS_DIR.glob(f"{job_id}_*"):
         files.append({
@@ -958,7 +1124,10 @@ def list_outputs(job_id: str):
     return {"ok": True, "job_id": job_id, "files": files}
 
 @app.get("/outputs/file/{filename}")
-def get_output_file(filename: str):
+def get_output_file(request: Request, filename: str):
+    # token required
+    _ = email_from_request_auth(request)
+
     p = OUTPUTS_DIR / filename
     if not p.exists():
         raise HTTPException(status_code=404, detail="file not found")
