@@ -272,6 +272,25 @@ def admin_guard(request: Request) -> None:
     supplied = request.headers.get("x-admin-key") or ""
     if not hmac.compare_digest(supplied.strip(), admin_key):
         raise HTTPException(status_code=401, detail="admin key required")
+class DevTokenResponse(BaseModel):
+    ok: bool = True
+    token: str
+    exp: int
+    email: str
+
+@app.post("/auth/dev-token", response_model=DevTokenResponse)
+def auth_dev_token(request: Request, email: str = Query(...)) -> DevTokenResponse:
+    """
+    Owner-only preview access without Stripe.
+    Requires header: x-admin-key: ADMIN_API_KEY
+    """
+    admin_guard(request)
+    email = email.strip().lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="email is required")
+    ensure_user(email)
+    tok = issue_token(email=email, ttl_seconds=TOKEN_TTL_SECONDS)
+    return DevTokenResponse(token=tok["token"], exp=tok["exp"], email=tok["email"])
 
 
 # -----------------------------
