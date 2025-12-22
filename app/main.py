@@ -42,7 +42,6 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 JOBS_DIR = DATA_DIR / "jobs"
 OUTPUTS_DIR = DATA_DIR / "outputs"
-PROCESSED_EVENTS_FILE = DATA_DIR / "processed_stripe_events.jsonl"
 
 for d in [DATA_DIR, JOBS_DIR, OUTPUTS_DIR]:
     d.mkdir(parents=True, exist_ok=True)
@@ -66,32 +65,18 @@ def _startup():
 
 
 # -----------------------------
-# Stripe defaults (TEST)
+# Stripe defaults (TEST) - legacy
 # -----------------------------
 TEST_PRICE_IDS = {
-    "starter": "price_1SdTz22L998MB1DPQbq4fN4b",  # 50 credits + course ($97)
-    "creator": "price_1Sdu2g2L998MB1DPg748ZPbd",  # 200 credits ($49)
-    "pro": "price_1Sdu3f2L998MB1DPJmndWTRx",      # 500 credits ($99)
+    "starter": "price_1SdTz22L998MB1DPQbq4fN4b",
+    "creator": "price_1Sdu2g2L998MB1DPg748ZPbd",
+    "pro": "price_1Sdu3f2L998MB1DPJmndWTRx",
 }
 
 DEFAULT_PACK_CREDITS = {
     "starter": 50,
     "creator": 200,
     "pro": 500,
-}
-
-# -----------------------------
-# LIVE REFILLS (Payment Links)
-# -----------------------------
-# These are the IDs you provided:
-# - 250 refill: price_1Sh7La2L998MB1DPtfvTv31N
-# - 500 refill: price_1Sh7Px2L998MB1DPQcQbGLfR
-#
-# You can override/extend via env JSON if you ever want:
-# STRIPE_PRICE_ID_TO_CREDITS='{"price_...":250,"price_...":500}'
-LIVE_PRICE_ID_TO_CREDITS_DEFAULT = {
-    "price_1Sh7La2L998MB1DPtfvTv31N": 250,
-    "price_1Sh7Px2L998MB1DPQcQbGLfR": 500,
 }
 
 
@@ -209,6 +194,22 @@ def get_stripe_mode() -> Literal["test", "live", "disabled"]:
         return "live"
     return "disabled"
 
+def stripe_enabled_or_throw() -> None:
+    if stripe is None:
+        raise HTTPException(status_code=500, detail="stripe package not installed. Run: pip install stripe")
+    key = os.getenv("STRIPE_SECRET_KEY", "").strip()
+    if not key:
+        raise HTTPException(status_code=500, detail="STRIPE_SECRET_KEY not set")
+    mode = get_stripe_mode()
+    if mode == "disabled":
+        raise HTTPException(status_code=500, detail="STRIPE_SECRET_KEY invalid format (expected sk_test_ or sk_live_)")
+    stripe.api_key = key
+
+def stripe_urls() -> Tuple[str, str]:
+    success = os.getenv("STRIPE_SUCCESS_URL", "http://localhost:3000/success?session_id={CHECKOUT_SESSION_ID}")
+    cancel = os.getenv("STRIPE_CANCEL_URL", "http://localhost:3000/cancel")
+    return success, cancel
+
 def pack_credits(pack_id: str) -> int:
     pack_id = pack_id.lower()
     env_key = f"PACK_CREDITS_{pack_id.upper()}"
@@ -238,111 +239,31 @@ def price_id_for_pack(pack_id: str) -> Optional[str]:
         return pid.strip()
     return TEST_PRICE_IDS.get(pack_id)
 
-def stripe_enabled_or_throw() -> None:
-    if stripe is None:
-        raise HTTPException(status_code=500, detail="stripe package not installed. Run: pip install stripe")
-    key = os.getenv("STRIPE_SECRET_KEY", "").strip()
-    if not key:
-        raise HTTPException(status_code=500, detail="STRIPE_SECRET_KEY not set")
-    mode = get_stripe_mode()
-    if mode == "disabled":
-        raise HTTPException(status_code=500, detail="STRIPE_SECRET_KEY invalid format (expected sk_test_ or sk_live_)")
-    stripe.api_key = key
-
-def stripe_urls() -> Tuple[str, str]:
-    success = os.getenv("STRIPE_SUCCESS_URL", "http://localhost:3000/success?session_id={CHECKOUT_SESSION_ID}")
-    cancel = os.getenv("STRIPE_CANCEL_URL", "http://localhost:3000/cancel")
-    return success, cancel
-
-def _price_id_to_credits_map() -> Dict[str, int]:
-    """
-    Source order:
-    1) env STRIPE_PRICE_ID_TO_CREDITS (JSON) if valid
-    2) built-in LIVE_PRICE_ID_TO_CREDITS_DEFAULT
-    """
+def load_price_to_credits_map() -> Dict[str, int]:
     raw = os.getenv("STRIPE_PRICE_ID_TO_CREDITS", "").strip()
-    if raw:
-        try:
-            data = json.loads(raw)
-            out: Dict[str, int] = {}
-            if isinstance(data, dict):
-                for k, v in data.items():
-                    if isinstance(k, str):
-                        try:
-                            out[k.strip()] = int(v)
-                        except Exception:
-                            pass
-            if out:
-                return out
-        except Exception:
-            pass
-    return dict(LIVE_PRICE_ID_TO_CREDITS_DEFAULT)
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+        out: Dict[str, int] = {}
+        if isinstance(data, dict):
+            for k, v in data.items():
+                if isinstance(k, str) and k.startswith("price_"):
+                    try:
+                        out[k] = int(v)
+                    except Exception:
+                        pass
+        return out
+    except Exception:
+        return {}
 
-def _extract_checkout_email(session_obj: Dict[str, Any]) -> str:
-    # Payment Links commonly populate customer_details.email
-    cd = session_obj.get("customer_details") or {}
+def _safe_email_from_session(session: Dict[str, Any]) -> str:
+    cd = session.get("customer_details") or {}
     email = (cd.get("email") or "").strip().lower()
     if email:
         return email
-    email = (session_obj.get("customer_email") or "").strip().lower()
-    if email:
-        return email
-    md = session_obj.get("metadata") or {}
-    email = (md.get("email") or "").strip().lower()
+    email = (session.get("customer_email") or "").strip().lower()
     return email
-
-def _already_processed_event(event_id: str) -> bool:
-    if not event_id:
-        return False
-    try:
-        if not PROCESSED_EVENTS_FILE.exists():
-            return False
-        # small file; scan lines
-        for line in PROCESSED_EVENTS_FILE.read_text().splitlines():
-            try:
-                obj = json.loads(line)
-                if obj.get("event_id") == event_id:
-                    return True
-            except Exception:
-                continue
-        return False
-    except Exception:
-        # fail-open (don't block credits if file read fails)
-        return False
-
-def _mark_processed_event(event_id: str, meta: Optional[Dict[str, Any]] = None) -> None:
-    if not event_id:
-        return
-    try:
-        rec = {"event_id": event_id, "ts": now_ts(), "meta": meta or {}}
-        with PROCESSED_EVENTS_FILE.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(rec) + "\n")
-    except Exception:
-        # if logging fails, we still proceed (worst case: rare duplicate)
-        pass
-
-def _credits_from_line_items(session_id: str) -> int:
-    """
-    For Stripe Payment Links, credits won't be in metadata.
-    We list line items and map price_id -> credits.
-    """
-    if not session_id:
-        return 0
-    mapping = _price_id_to_credits_map()
-
-    try:
-        items = stripe.checkout.Session.list_line_items(session_id, limit=20)
-    except Exception:
-        return 0
-
-    total = 0
-    for it in (items.get("data") or []):
-        price = (it.get("price") or {})
-        price_id = (price.get("id") or "").strip()
-        qty = int(it.get("quantity") or 1)
-        if price_id in mapping:
-            total += int(mapping[price_id]) * max(1, qty)
-    return int(total)
 
 
 # -----------------------------
@@ -451,7 +372,6 @@ def generate_sliding_segments(duration_s: float, seg_len_s: float, seg_step_s: f
 # -----------------------------
 def build_upsell_payload(missing_credits: int) -> Dict[str, Any]:
     mode = get_stripe_mode()
-
     packs = []
     for pid in ["starter", "creator", "pro"]:
         packs.append({
@@ -460,9 +380,7 @@ def build_upsell_payload(missing_credits: int) -> Dict[str, Any]:
             "price_id": price_id_for_pack(pid),
             "mode": mode,
         })
-
     suggested = next((p for p in packs if p["credits"] >= missing_credits), packs[-1])
-
     return {
         "reason": "insufficient_export_credits",
         "missing_credits": int(max(0, missing_credits)),
@@ -830,12 +748,8 @@ def run_job(job_id: str) -> None:
 # -----------------------------
 @app.get("/health")
 def health() -> Dict[str, Any]:
-    return {
-        "status": "ok",
-        "service": APP_NAME,
-        "stripe_mode": get_stripe_mode(),
-        "refill_price_ids_loaded": list(_price_id_to_credits_map().keys()),
-    }
+    m = load_price_to_credits_map()
+    return {"status": "ok", "service": APP_NAME, "stripe_mode": get_stripe_mode(), "refill_price_ids_loaded": list(m.keys())}
 
 @app.get("/")
 def root():
@@ -856,6 +770,22 @@ def credits_add(email: str = Query(...), amount: int = Query(...)) -> Dict[str, 
 def credits_set(email: str = Query(...), credits: int = Query(...)) -> Dict[str, Any]:
     set_credits(email, int(credits))
     return {"ok": True, "email": email.strip().lower(), "credits": get_credits(email)}
+
+# NEW: success-page helper (session_id -> email)
+@app.get("/stripe/session-email")
+def stripe_session_email(session_id: str = Query(...)) -> Dict[str, Any]:
+    """
+    Used by success.html to redirect user to tool.html with prefilled email.
+    """
+    stripe_enabled_or_throw()
+    try:
+        sess = stripe.checkout.Session.retrieve(session_id)
+        email = _safe_email_from_session(sess or {})
+        if not email:
+            return {"ok": True, "email": None}
+        return {"ok": True, "email": email}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"session lookup failed: {e}")
 
 # Stripe: create checkout session for a pack_id (starter/creator/pro)
 @app.post("/stripe/create-checkout-session")
@@ -900,65 +830,44 @@ async def stripe_webhook(request: Request) -> Dict[str, Any]:
 
     payload = await request.body()
     sig = request.headers.get("stripe-signature")
-
     try:
         event = stripe.Webhook.construct_event(payload=payload, sig_header=sig, secret=whsec)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"invalid webhook: {e}")
 
-    event_id = (event.get("id") or "").strip()
-    if event_id and _already_processed_event(event_id):
-        return {"ok": True, "skipped": True, "reason": "already_processed", "event_id": event_id}
+    if event["type"] == "checkout.session.completed":
+        session = event["data"]["object"]
+        md = session.get("metadata", {}) or {}
 
-    # We only credit on completed checkout sessions
-    if event.get("type") == "checkout.session.completed":
-        session_obj = event["data"]["object"]
-
-        email = _extract_checkout_email(session_obj)
+        # Email (metadata preferred; Payment Links -> customer_details.email)
+        email = (md.get("email") or "").strip().lower()
         if not email:
-            _mark_processed_event(event_id, {"type": event.get("type"), "reason": "missing_email"})
-            return {"ok": True, "credited": False, "reason": "missing_email", "event_id": event_id}
+            email = _safe_email_from_session(session)
 
-        # 1) If our own checkout session was used, metadata credits exists
-        md = session_obj.get("metadata", {}) or {}
-        credits_from_metadata = 0
+        # Credits from metadata (legacy)
+        credits = 0
         try:
-            credits_from_metadata = int(md.get("credits") or "0")
+            credits = int(md.get("credits") or "0")
         except Exception:
-            credits_from_metadata = 0
+            credits = 0
 
-        credits_to_add = 0
+        # Payment Links: infer from price_id via line items
+        if credits <= 0:
+            price_map = load_price_to_credits_map()
+            try:
+                li = stripe.checkout.Session.list_line_items(session["id"], limit=10)
+                for item in (li.get("data") or []):
+                    price_obj = item.get("price") or {}
+                    price_id = price_obj.get("id")
+                    if price_id and price_id in price_map:
+                        credits += int(price_map[price_id])
+            except Exception:
+                pass
 
-        if credits_from_metadata > 0:
-            credits_to_add = credits_from_metadata
-        else:
-            # 2) Payment Links: derive from line_items price_id mapping
-            session_id = (session_obj.get("id") or "").strip()
-            credits_to_add = _credits_from_line_items(session_id)
+        if email and credits > 0:
+            add_credits(email, credits)
 
-        if credits_to_add > 0:
-            add_credits(email, int(credits_to_add))
-            _mark_processed_event(event_id, {
-                "type": event.get("type"),
-                "email": email,
-                "credits_added": int(credits_to_add),
-                "mode": get_stripe_mode(),
-            })
-            return {"ok": True, "credited": True, "email": email, "credits_added": int(credits_to_add), "event_id": event_id}
-
-        # If we reach here: no credits found to add (unknown price_id or misconfig)
-        _mark_processed_event(event_id, {
-            "type": event.get("type"),
-            "email": email,
-            "credits_added": 0,
-            "reason": "no_credits_mapping_or_metadata",
-            "mode": get_stripe_mode(),
-        })
-        return {"ok": True, "credited": False, "email": email, "credits_added": 0, "event_id": event_id}
-
-    # Mark other events as processed (optional)
-    _mark_processed_event(event_id, {"type": event.get("type"), "note": "ignored"})
-    return {"ok": True, "ignored": True, "event_id": event_id}
+    return {"ok": True}
 
 @app.post("/jobs", response_model=CreateJobResponse)
 def create_job(payload: CreateJobRequest) -> CreateJobResponse:
@@ -992,7 +901,6 @@ def create_job(payload: CreateJobRequest) -> CreateJobResponse:
 
     ensure_user(email)
 
-    # Must afford analysis (exports can be partially blocked -> upsell)
     analysis_total = len(segments) * int(payload.analysis_cost_per_segment)
     if analysis_total > get_credits(email):
         raise HTTPException(
