@@ -61,7 +61,6 @@ def _cors_origins() -> List[str]:
     raw = os.getenv("ALLOWED_ORIGINS", "").strip()
     if raw:
         return [x.strip() for x in raw.split(",") if x.strip()]
-    # sensible default for your setup
     return ["https://www.getmotionforge.com"]
 
 app.add_middleware(
@@ -208,7 +207,10 @@ def _b64url_decode(s: str) -> bytes:
     return base64.urlsafe_b64decode((s + pad).encode("utf-8"))
 
 def _token_secret() -> bytes:
-    secret = os.getenv("ACCESS_TOKEN_SECRET", "").strip()
+    secret = (os.getenv("ACCESS_TOKEN_SECRET", "") or "").strip()
+    # Remove surrounding quotes if present
+    if (secret.startswith('"') and secret.endswith('"')) or (secret.startswith("'") and secret.endswith("'")):
+        secret = secret[1:-1].strip()
     if not secret:
         raise HTTPException(status_code=500, detail="ACCESS_TOKEN_SECRET not set")
     return secret.encode("utf-8")
@@ -237,7 +239,6 @@ def verify_token(token: str) -> Dict[str, Any]:
     expected_sig = hmac.new(_token_secret(), payload_b64.encode("utf-8"), hashlib.sha256).digest()
     expected_sig_b64 = _b64url_encode(expected_sig)
 
-    # constant-time compare
     if not hmac.compare_digest(expected_sig_b64, sig_b64):
         raise HTTPException(status_code=401, detail="invalid token signature")
 
@@ -265,13 +266,47 @@ def email_from_request_auth(request: Request) -> str:
     return payload["email"]
 
 
-def admin_guard(request: Request) -> None:
-    admin_key = os.getenv("ADMIN_API_KEY", "").strip()
-    if not admin_key:
+# -----------------------------
+# Admin guard (bulletproof)
+# -----------------------------
+def _clean_env_secret(val: str) -> str:
+    v = (val or "").strip()
+    # Remove surrounding quotes if present
+    if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
+        v = v[1:-1].strip()
+    # Collapse accidental newlines/whitespace
+    v = "".join(v.split())
+    return v
+
+def _admin_expected() -> str:
+    expected_raw = os.getenv("ADMIN_API_KEY", "") or ""
+    expected = _clean_env_secret(expected_raw)
+    if not expected:
         raise HTTPException(status_code=500, detail="ADMIN_API_KEY not set")
-    supplied = request.headers.get("x-admin-key") or ""
-    if not hmac.compare_digest(supplied.strip(), admin_key):
+    return expected
+
+def _admin_got(request: Request) -> str:
+    # Accept multiple header spellings
+    got = (
+        request.headers.get("x-admin-key")
+        or request.headers.get("X-Admin-Key")
+        or request.headers.get("x_admin_key")
+        or request.headers.get("x-api-key")
+        or request.headers.get("X-Api-Key")
+        or ""
+    )
+    return _clean_env_secret(got)
+
+def admin_guard(request: Request) -> None:
+    expected = _admin_expected()
+    got = _admin_got(request)
+    if not got or not hmac.compare_digest(got, expected):
         raise HTTPException(status_code=401, detail="admin key required")
+
+
+# -----------------------------
+# Owner preview token
+# -----------------------------
 class DevTokenResponse(BaseModel):
     ok: bool = True
     token: str
@@ -280,10 +315,6 @@ class DevTokenResponse(BaseModel):
 
 @app.post("/auth/dev-token", response_model=DevTokenResponse)
 def auth_dev_token(request: Request, email: str = Query(...)) -> DevTokenResponse:
-    """
-    Owner-only preview access without Stripe.
-    Requires header: x-admin-key: ADMIN_API_KEY
-    """
     admin_guard(request)
     email = email.strip().lower()
     if not email:
@@ -297,7 +328,7 @@ def auth_dev_token(request: Request, email: str = Query(...)) -> DevTokenRespons
 # Stripe mode + price lookup
 # -----------------------------
 def get_stripe_mode() -> Literal["test", "live", "disabled"]:
-    key = os.getenv("STRIPE_SECRET_KEY", "").strip()
+    key = (os.getenv("STRIPE_SECRET_KEY", "") or "").strip()
     if not key:
         return "disabled"
     if key.startswith("sk_test_"):
@@ -309,7 +340,7 @@ def get_stripe_mode() -> Literal["test", "live", "disabled"]:
 def stripe_enabled_or_throw() -> None:
     if stripe is None:
         raise HTTPException(status_code=500, detail="stripe package not installed. Run: pip install stripe")
-    key = os.getenv("STRIPE_SECRET_KEY", "").strip()
+    key = (os.getenv("STRIPE_SECRET_KEY", "") or "").strip()
     if not key:
         raise HTTPException(status_code=500, detail="STRIPE_SECRET_KEY not set")
     mode = get_stripe_mode()
@@ -352,7 +383,7 @@ def price_id_for_pack(pack_id: str) -> Optional[str]:
     return TEST_PRICE_IDS.get(pack_id)
 
 def load_price_to_credits_map() -> Dict[str, int]:
-    raw = os.getenv("STRIPE_PRICE_ID_TO_CREDITS", "").strip()
+    raw = (os.getenv("STRIPE_PRICE_ID_TO_CREDITS", "") or "").strip()
     if not raw:
         return {}
     try:
@@ -384,21 +415,16 @@ def _safe_email_from_session(session: Dict[str, Any]) -> str:
 Aspect = Literal["vertical", "square", "horizontal"]
 
 class CreateJobRequest(BaseModel):
-    # email will be ignored when using token auth
-    email: str = Field(default="motionforge-tester@example.com")
+    email: str = Field(default="motionforge-tester@example.com")  # ignored when using token auth
     video_path: str
-
     segments: Optional[List[Dict[str, float]]] = None
     top_n: int = Field(default=3, ge=1, le=20)
     export_top_only: bool = True
-
     seg_len_s: float = Field(default=6.0, ge=2.0, le=60.0)
     seg_step_s: float = Field(default=3.0, ge=0.5, le=60.0)
     max_candidates: int = Field(default=60, ge=5, le=300)
-
     aspect: Aspect = "vertical"
     include_metadata_json: bool = True
-
     analysis_cost_per_segment: int = Field(default=1, ge=0, le=100)
     export_cost_per_mp4: int = Field(default=5, ge=0, le=500)
 
@@ -490,7 +516,7 @@ def generate_sliding_segments(duration_s: float, seg_len_s: float, seg_step_s: f
 
 
 # -----------------------------
-# Upsell (A): only when exports blocked
+# Upsell helper
 # -----------------------------
 def build_upsell_payload(missing_credits: int) -> Dict[str, Any]:
     mode = get_stripe_mode()
@@ -730,7 +756,7 @@ def write_metadata_json(job_id: str, idx: int, payload: Dict[str, Any]) -> str:
 
 
 # -----------------------------
-# Job runner (credits + upsell A)
+# Job runner (credits + upsell)
 # -----------------------------
 def run_job(job_id: str) -> None:
     job = JOBS.get(job_id)
@@ -753,14 +779,12 @@ def run_job(job_id: str) -> None:
 
     credits_before = get_credits(email)
 
-    # Charge analysis
     credits_charged_analysis = len(segments) * analysis_cost_per_segment
     if credits_charged_analysis > 0:
         deduct_credits(email, credits_charged_analysis)
 
     credits_after_analysis = get_credits(email)
 
-    # Score segments
     scored: List[Dict[str, Any]] = []
     for i, seg in enumerate(segments):
         start_s = safe_float(seg.get("start", 0.0))
@@ -787,7 +811,6 @@ def run_job(job_id: str) -> None:
     winners_by_score = ranked[: min(top_n, len(ranked))]
     selected_indices = set([x["index"] for x in winners_by_score])
 
-    # Export budget
     if export_cost_per_mp4 <= 0:
         max_affordable_exports = len(winners_by_score)
     else:
@@ -796,20 +819,16 @@ def run_job(job_id: str) -> None:
     winners_limited = winners_by_score[: min(len(winners_by_score), int(max_affordable_exports))]
     exported_indices = set([x["index"] for x in winners_limited])
 
-    # Upsell only if blocked
     blocked_exports_count = len(winners_by_score) - len(winners_limited)
     missing_credits = blocked_exports_count * export_cost_per_mp4 if blocked_exports_count > 0 else 0
     upsell = build_upsell_payload(missing_credits) if blocked_exports_count > 0 else None
 
-    # Charge exports
     credits_charged_exports = len(exported_indices) * export_cost_per_mp4
     if credits_charged_exports > 0:
         deduct_credits(email, credits_charged_exports)
 
     credits_after = get_credits(email)
-    credits_total_charged = credits_charged_analysis + credits_charged_exports
 
-    # Render results
     results: List[Dict[str, Any]] = []
     for item in scored:
         idx = item["index"]
@@ -818,9 +837,10 @@ def run_job(job_id: str) -> None:
         output_mp4 = None
         meta_json = None
 
-        if (not export_top_only) or exported:
-            if exported:
-                output_mp4 = render_clip_ffmpeg(job_id, idx - 1, video_path, item["start"], item["end"], aspect)
+        if (not export_top_only) and exported:
+            output_mp4 = render_clip_ffmpeg(job_id, idx - 1, video_path, item["start"], item["end"], aspect)
+        if export_top_only and exported:
+            output_mp4 = render_clip_ffmpeg(job_id, idx - 1, video_path, item["start"], item["end"], aspect)
 
         if include_metadata_json:
             meta_payload = {
@@ -834,7 +854,6 @@ def run_job(job_id: str) -> None:
                     "credits_after": credits_after,
                     "credits_charged_analysis": credits_charged_analysis,
                     "credits_charged_exports": credits_charged_exports,
-                    "credits_total_charged": credits_total_charged,
                     "analysis_cost_per_segment": analysis_cost_per_segment,
                     "export_cost_per_mp4": export_cost_per_mp4,
                 },
@@ -843,26 +862,14 @@ def run_job(job_id: str) -> None:
             meta_json = write_metadata_json(job_id, idx - 1, meta_payload)
 
         results.append({**item, "selected": selected, "exported": exported, "output": output_mp4, "meta_json": meta_json})
-
+        job["results"] = results
         job["progress"] = round(len(results) / max(1, len(scored)), 4)
         job["updated_at"] = now_ts()
-        job["results"] = results
-
-    job["credits_before"] = credits_before
-    job["credits_after"] = credits_after
-    job["credits_charged_analysis"] = credits_charged_analysis
-    job["credits_charged_exports"] = credits_charged_exports
-    job["credits_total_charged"] = credits_total_charged
-    job["analysis_cost_per_segment"] = analysis_cost_per_segment
-    job["export_cost_per_mp4"] = export_cost_per_mp4
-    job["selected_exports_requested"] = len(winners_by_score)
-    job["exports_completed"] = len(exported_indices)
-    job["exports_blocked"] = blocked_exports_count
-    job["upsell"] = upsell
 
     job["status"] = "done"
     job["progress"] = 1.0
     job["updated_at"] = now_ts()
+    job["upsell"] = upsell
 
 
 # -----------------------------
@@ -886,7 +893,25 @@ def root():
 
 
 # -----------------------------
-# AUTH: Stripe session -> token  (Token Fix A)
+# Debug (no secret leakage)
+# -----------------------------
+@app.get("/debug/env")
+def debug_env():
+    def fp(x: str) -> str:
+        x = _clean_env_secret(x)
+        return ("****" + x[-4:]) if x else ""
+
+    return {
+        "has_admin_api_key": bool(_clean_env_secret(os.getenv("ADMIN_API_KEY", "") or "")),
+        "admin_api_key_fp": fp(os.getenv("ADMIN_API_KEY", "") or ""),
+        "has_access_token_secret": bool(_clean_env_secret(os.getenv("ACCESS_TOKEN_SECRET", "") or "")),
+        "access_token_secret_fp": fp(os.getenv("ACCESS_TOKEN_SECRET", "") or ""),
+        "stripe_mode": get_stripe_mode(),
+    }
+
+
+# -----------------------------
+# AUTH: Stripe session -> token
 # -----------------------------
 @app.post("/auth/issue-from-session", response_model=IssueFromSessionResponse)
 def auth_issue_from_session(payload: IssueFromSessionRequest) -> IssueFromSessionResponse:
@@ -904,9 +929,8 @@ def auth_issue_from_session(payload: IssueFromSessionRequest) -> IssueFromSessio
     if not sess:
         raise HTTPException(status_code=400, detail="session not found")
 
-    # Stripe fields to check:
-    status = (sess.get("status") or "").lower()               # often "complete"
-    payment_status = (sess.get("payment_status") or "").lower()  # "paid" if paid
+    status = (sess.get("status") or "").lower()
+    payment_status = (sess.get("payment_status") or "").lower()
 
     if payment_status != "paid":
         raise HTTPException(status_code=402, detail=f"payment not completed (payment_status={payment_status}, status={status})")
@@ -915,13 +939,13 @@ def auth_issue_from_session(payload: IssueFromSessionRequest) -> IssueFromSessio
     if not email:
         raise HTTPException(status_code=400, detail="could not determine customer email from Stripe session")
 
-    ensure_user(email)  # user exists in DB
+    ensure_user(email)
     tok = issue_token(email=email, ttl_seconds=TOKEN_TTL_SECONDS)
     return IssueFromSessionResponse(token=tok["token"], exp=tok["exp"], email=tok["email"])
 
 
 # -----------------------------
-# Credits (TOKEN-ONLY)
+# Credits (TOKEN-ONLY) + Admin ops
 # -----------------------------
 @app.get("/credits")
 def credits_get(request: Request) -> Dict[str, Any]:
@@ -929,7 +953,6 @@ def credits_get(request: Request) -> Dict[str, Any]:
     ensure_user(email)
     return {"ok": True, "email": email, "credits": get_credits(email)}
 
-# Admin-only (manual ops)
 @app.post("/credits/add")
 def credits_add(request: Request, email: str = Query(...), amount: int = Query(...)) -> Dict[str, Any]:
     admin_guard(request)
@@ -944,7 +967,7 @@ def credits_set(request: Request, email: str = Query(...), credits: int = Query(
 
 
 # -----------------------------
-# Legacy helper: session_id -> email (keep for compatibility)
+# Legacy helper: session_id -> email
 # -----------------------------
 @app.get("/stripe/session-email")
 def stripe_session_email(session_id: str = Query(...)) -> Dict[str, Any]:
@@ -957,94 +980,6 @@ def stripe_session_email(session_id: str = Query(...)) -> Dict[str, Any]:
         return {"ok": True, "email": email}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"session lookup failed: {e}")
-
-
-# -----------------------------
-# Stripe: create checkout session for a pack_id (starter/creator/pro)
-# -----------------------------
-@app.post("/stripe/create-checkout-session")
-def stripe_create_checkout_session(
-    email: str = Query(...),
-    pack_id: str = Query(...),
-) -> Dict[str, Any]:
-    pack_id = pack_id.strip().lower()
-    if pack_id not in {"starter", "creator", "pro"}:
-        raise HTTPException(status_code=400, detail="pack_id must be starter|creator|pro")
-
-    stripe_enabled_or_throw()
-    mode = get_stripe_mode()
-
-    pid = price_id_for_pack(pack_id)
-    if not pid:
-        raise HTTPException(status_code=500, detail=f"price id not configured for {mode}:{pack_id}")
-
-    success_url, cancel_url = stripe_urls()
-
-    session = stripe.checkout.Session.create(
-        mode="payment",
-        line_items=[{"price": pid, "quantity": 1}],
-        success_url=success_url,
-        cancel_url=cancel_url,
-        metadata={
-            "email": email.strip().lower(),
-            "pack_id": pack_id,
-            "credits": str(pack_credits(pack_id)),
-            "mode": mode,
-        },
-    )
-    return {"ok": True, "checkout_url": session.url, "mode": mode, "pack_id": pack_id, "price_id": pid}
-
-
-# -----------------------------
-# Stripe webhook: credits user on successful checkout
-# -----------------------------
-@app.post("/stripe/webhook")
-async def stripe_webhook(request: Request) -> Dict[str, Any]:
-    stripe_enabled_or_throw()
-    whsec = os.getenv("STRIPE_WEBHOOK_SECRET", "").strip()
-    if not whsec:
-        raise HTTPException(status_code=500, detail="STRIPE_WEBHOOK_SECRET not set")
-
-    payload = await request.body()
-    sig = request.headers.get("stripe-signature")
-    try:
-        event = stripe.Webhook.construct_event(payload=payload, sig_header=sig, secret=whsec)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"invalid webhook: {e}")
-
-    if event["type"] == "checkout.session.completed":
-        session = event["data"]["object"]
-        md = session.get("metadata", {}) or {}
-
-        # Email (metadata preferred; Payment Links -> customer_details.email)
-        email = (md.get("email") or "").strip().lower()
-        if not email:
-            email = _safe_email_from_session(session)
-
-        # Credits from metadata (legacy)
-        credits = 0
-        try:
-            credits = int(md.get("credits") or "0")
-        except Exception:
-            credits = 0
-
-        # Payment Links: infer from price_id via line items
-        if credits <= 0:
-            price_map = load_price_to_credits_map()
-            try:
-                li = stripe.checkout.Session.list_line_items(session["id"], limit=10)
-                for item in (li.get("data") or []):
-                    price_obj = item.get("price") or {}
-                    price_id = price_obj.get("id")
-                    if price_id and price_id in price_map:
-                        credits += int(price_map[price_id])
-            except Exception:
-                pass
-
-        if email and credits > 0:
-            add_credits(email, credits)
-
-    return {"ok": True}
 
 
 # -----------------------------
@@ -1064,7 +999,6 @@ def create_job(request: Request, payload: CreateJobRequest) -> CreateJobResponse
 
     duration_s = get_video_duration_seconds(str(p))
 
-    # Determine segments
     if payload.segments:
         segments_raw = payload.segments
         segments = normalize_and_validate_segments(segments_raw, duration_s=duration_s)
@@ -1082,10 +1016,7 @@ def create_job(request: Request, payload: CreateJobRequest) -> CreateJobResponse
 
     analysis_total = len(segments) * int(payload.analysis_cost_per_segment)
     if analysis_total > get_credits(email):
-        raise HTTPException(
-            status_code=402,
-            detail=f"insufficient credits for analysis: have {get_credits(email)}, need {analysis_total}"
-        )
+        raise HTTPException(status_code=402, detail=f"insufficient credits for analysis: have {get_credits(email)}, need {analysis_total}")
 
     job_id = str(uuid.uuid4())
     JOBS[job_id] = {
@@ -1112,9 +1043,7 @@ def create_job(request: Request, payload: CreateJobRequest) -> CreateJobResponse
 
 @app.get("/status/{job_id}")
 def job_status(request: Request, job_id: str) -> Dict[str, Any]:
-    # token required to view job info (prevents leaking)
     _ = email_from_request_auth(request)
-
     job = JOBS.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="job not found")
@@ -1122,13 +1051,11 @@ def job_status(request: Request, job_id: str) -> Dict[str, Any]:
 
 
 # -----------------------------
-# Serve outputs (read-only)
+# Serve outputs (read-only, token required)
 # -----------------------------
 @app.get("/outputs/{job_id}")
 def list_outputs(request: Request, job_id: str):
-    # token required
     _ = email_from_request_auth(request)
-
     files = []
     for p in OUTPUTS_DIR.glob(f"{job_id}_*"):
         files.append({
@@ -1136,23 +1063,14 @@ def list_outputs(request: Request, job_id: str):
             "url": f"/outputs/file/{p.name}",
             "type": p.suffix.lstrip("."),
         })
-
     if not files:
         raise HTTPException(status_code=404, detail="no outputs for this job")
-
     return {"ok": True, "job_id": job_id, "files": files}
 
 @app.get("/outputs/file/{filename}")
 def get_output_file(request: Request, filename: str):
-    # token required
     _ = email_from_request_auth(request)
-
     p = OUTPUTS_DIR / filename
     if not p.exists():
         raise HTTPException(status_code=404, detail="file not found")
-
-    return FileResponse(
-        path=str(p),
-        filename=p.name,
-        media_type="application/octet-stream",
-    )
+    return FileResponse(path=str(p), filename=p.name, media_type="application/octet-stream")
