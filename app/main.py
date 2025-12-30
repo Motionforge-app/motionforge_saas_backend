@@ -1,3 +1,4 @@
+# app/main.py
 from __future__ import annotations
 
 import os
@@ -11,7 +12,7 @@ import base64
 import hmac
 import hashlib
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Literal, Tuple
+from typing import Optional, Dict, Any, List, Literal, Tuple, Set
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -409,11 +410,11 @@ def _safe_email_from_session(session: Dict[str, Any]) -> str:
 
 
 # -----------------------------
-# Stripe idempotency (simple file-based)
+# Stripe idempotency (best-effort file-based)
 # -----------------------------
 PROCESSED_SESSIONS_PATH = DATA_DIR / "processed_sessions.json"
 
-def _load_processed_sessions() -> set[str]:
+def _load_processed_sessions() -> Set[str]:
     try:
         if PROCESSED_SESSIONS_PATH.exists():
             data = json.loads(PROCESSED_SESSIONS_PATH.read_text() or "[]")
@@ -423,18 +424,19 @@ def _load_processed_sessions() -> set[str]:
         pass
     return set()
 
-def _save_processed_sessions(sessions: set[str]) -> None:
+def _save_processed_sessions(sessions: Set[str]) -> None:
     try:
+        # limit file size defensively
         PROCESSED_SESSIONS_PATH.write_text(json.dumps(sorted(list(sessions))[:5000]))
     except Exception:
         pass
 
-PROCESSED_SESSIONS = _load_processed_sessions()
+PROCESSED_SESSIONS: Set[str] = _load_processed_sessions()
 
 def grant_credits_from_session(session_id: str) -> Dict[str, Any]:
     """
-    Retrieves checkout session + line items, maps price_id -> credits, and adds credits to user.
-    Idempotent by session_id (best-effort).
+    Retrieves checkout session + line items, maps price_id -> credits (ENV JSON),
+    and adds credits to user. Idempotent by session_id (best-effort).
     """
     stripe_enabled_or_throw()
     session_id = (session_id or "").strip()
@@ -443,7 +445,6 @@ def grant_credits_from_session(session_id: str) -> Dict[str, Any]:
         raise HTTPException(status_code=422, detail="session_id too short")
 
     if session_id in PROCESSED_SESSIONS:
-        # Already processed; return safe summary
         return {"ok": True, "already_processed": True, "session_id": session_id}
 
     try:
@@ -466,28 +467,39 @@ def grant_credits_from_session(session_id: str) -> Dict[str, Any]:
 
     price_map = load_price_to_credits_map()
     if not price_map:
-        # If mapping missing, do not silently succeed
         raise HTTPException(status_code=500, detail="STRIPE_PRICE_ID_TO_CREDITS not configured")
 
+    # IMPORTANT FIX: line items must be fetched explicitly; expand price for safety
     try:
-        line_items = stripe.checkout.Session.list_line_items(session_id, limit=10)
+        line_items = stripe.checkout.Session.list_line_items(
+            session_id,
+            limit=100,
+            expand=["data.price"],
+        )
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"line_items lookup failed: {e}")
 
+    price_ids_seen: List[str] = []
     total_credits = 0
-    used_prices: List[str] = []
+    matched: List[Tuple[str, int, int]] = []  # (price_id, credits_each, qty)
+
     for li in (line_items.get("data") or []):
         price = li.get("price") or {}
         price_id = (price.get("id") or "").strip()
         qty = int(li.get("quantity") or 1)
+        if price_id:
+            price_ids_seen.append(price_id)
+
         if price_id and price_id in price_map:
-            total_credits += int(price_map[price_id]) * max(1, qty)
-            used_prices.append(price_id)
+            credits_each = int(price_map[price_id])
+            q = max(1, qty)
+            total_credits += credits_each * q
+            matched.append((price_id, credits_each, q))
 
     if total_credits <= 0:
         raise HTTPException(
             status_code=400,
-            detail=f"no matching price_id in STRIPE_PRICE_ID_TO_CREDITS for session line items (prices={used_prices or 'none'})"
+            detail=f"no matching price_id in STRIPE_PRICE_ID_TO_CREDITS for session line items (prices={price_ids_seen or 'none'})"
         )
 
     add_credits(email, total_credits)
@@ -502,7 +514,8 @@ def grant_credits_from_session(session_id: str) -> Dict[str, Any]:
         "email": email,
         "credits_added": int(total_credits),
         "credits_now": int(get_credits(email)),
-        "matched_price_ids": used_prices,
+        "price_ids_seen": price_ids_seen,
+        "matched": matched,
     }
 
 
@@ -1008,14 +1021,19 @@ def debug_env():
         "access_token_secret_fp": fp(os.getenv("ACCESS_TOKEN_SECRET", "") or ""),
         "stripe_mode": get_stripe_mode(),
         "has_webhook_secret": bool(_clean_env_secret(os.getenv("STRIPE_WEBHOOK_SECRET", "") or "")),
+        "price_id_to_credits_loaded": list(load_price_to_credits_map().keys()),
     }
 
 
 # -----------------------------
-# Stripe webhook (FIX 404)
+# Stripe webhook (credits grant)
 # -----------------------------
 @app.post("/stripe/webhook")
 async def stripe_webhook(request: Request) -> Dict[str, Any]:
+    """
+    Stripe Webhook endpoint.
+    IMPORTANT: Stripe must point to: https://motionforgesaasbackend-production.up.railway.app/stripe/webhook
+    """
     stripe_enabled_or_throw()
 
     webhook_secret = (os.getenv("STRIPE_WEBHOOK_SECRET", "") or "").strip()
@@ -1035,13 +1053,12 @@ async def stripe_webhook(request: Request) -> Dict[str, Any]:
     event_type = event.get("type")
     obj = (event.get("data") or {}).get("object") or {}
 
-    # We only care about session completion
+    # We only care about successful checkout session completion
     if event_type in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):
         session_id = (obj.get("id") or "").strip()
         if session_id:
-            # Best-effort: grant credits (idempotent by session_id)
-            res = grant_credits_from_session(session_id)
-            return {"ok": True, "handled": True, "event_type": event_type, "grant": res}
+            grant = grant_credits_from_session(session_id)
+            return {"ok": True, "handled": True, "event_type": event_type, "grant": grant}
 
     return {"ok": True, "handled": False, "event_type": event_type}
 
@@ -1057,10 +1074,10 @@ def auth_issue_from_session(payload: IssueFromSessionRequest) -> IssueFromSessio
     if not session_id:
         raise HTTPException(status_code=400, detail="session_id is required")
 
-    # 1) Grant credits (fallback if webhook delayed/failed)
+    # Grant credits (fallback if webhook delayed/failed)
     grant = grant_credits_from_session(session_id)
 
-    # 2) Retrieve session again to get email reliably
+    # Retrieve session to get email reliably
     try:
         sess = stripe.checkout.Session.retrieve(session_id)
     except Exception as e:
