@@ -286,7 +286,6 @@ def _admin_expected() -> str:
     return expected
 
 def _admin_got(request: Request) -> str:
-    # Accept multiple header spellings
     got = (
         request.headers.get("x-admin-key")
         or request.headers.get("X-Admin-Key")
@@ -410,6 +409,104 @@ def _safe_email_from_session(session: Dict[str, Any]) -> str:
 
 
 # -----------------------------
+# Stripe idempotency (simple file-based)
+# -----------------------------
+PROCESSED_SESSIONS_PATH = DATA_DIR / "processed_sessions.json"
+
+def _load_processed_sessions() -> set[str]:
+    try:
+        if PROCESSED_SESSIONS_PATH.exists():
+            data = json.loads(PROCESSED_SESSIONS_PATH.read_text() or "[]")
+            if isinstance(data, list):
+                return set([str(x) for x in data if isinstance(x, str)])
+    except Exception:
+        pass
+    return set()
+
+def _save_processed_sessions(sessions: set[str]) -> None:
+    try:
+        PROCESSED_SESSIONS_PATH.write_text(json.dumps(sorted(list(sessions))[:5000]))
+    except Exception:
+        pass
+
+PROCESSED_SESSIONS = _load_processed_sessions()
+
+def grant_credits_from_session(session_id: str) -> Dict[str, Any]:
+    """
+    Retrieves checkout session + line items, maps price_id -> credits, and adds credits to user.
+    Idempotent by session_id (best-effort).
+    """
+    stripe_enabled_or_throw()
+    session_id = (session_id or "").strip()
+
+    if len(session_id) < 10:
+        raise HTTPException(status_code=422, detail="session_id too short")
+
+    if session_id in PROCESSED_SESSIONS:
+        # Already processed; return safe summary
+        return {"ok": True, "already_processed": True, "session_id": session_id}
+
+    try:
+        sess = stripe.checkout.Session.retrieve(session_id)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"session lookup failed: {e}")
+
+    if not sess:
+        raise HTTPException(status_code=400, detail="session not found")
+
+    payment_status = (sess.get("payment_status") or "").lower()
+    if payment_status != "paid":
+        raise HTTPException(status_code=402, detail=f"payment not completed (payment_status={payment_status})")
+
+    email = _safe_email_from_session(sess)
+    if not email:
+        raise HTTPException(status_code=400, detail="could not determine customer email from Stripe session")
+
+    ensure_user(email)
+
+    price_map = load_price_to_credits_map()
+    if not price_map:
+        # If mapping missing, do not silently succeed
+        raise HTTPException(status_code=500, detail="STRIPE_PRICE_ID_TO_CREDITS not configured")
+
+    try:
+        line_items = stripe.checkout.Session.list_line_items(session_id, limit=10)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"line_items lookup failed: {e}")
+
+    total_credits = 0
+    used_prices: List[str] = []
+    for li in (line_items.get("data") or []):
+        price = li.get("price") or {}
+        price_id = (price.get("id") or "").strip()
+        qty = int(li.get("quantity") or 1)
+        if price_id and price_id in price_map:
+            total_credits += int(price_map[price_id]) * max(1, qty)
+            used_prices.append(price_id)
+
+    if total_credits <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"no matching price_id in STRIPE_PRICE_ID_TO_CREDITS for session line items (prices={used_prices or 'none'})"
+        )
+
+    add_credits(email, total_credits)
+
+    PROCESSED_SESSIONS.add(session_id)
+    _save_processed_sessions(PROCESSED_SESSIONS)
+
+    return {
+        "ok": True,
+        "already_processed": False,
+        "session_id": session_id,
+        "email": email,
+        "credits_added": int(total_credits),
+        "credits_now": int(get_credits(email)),
+        "matched_price_ids": used_prices,
+    }
+
+
+# -----------------------------
 # Models
 # -----------------------------
 Aspect = Literal["vertical", "square", "horizontal"]
@@ -440,6 +537,9 @@ class IssueFromSessionResponse(BaseModel):
     token: str
     exp: int
     email: str
+    credits_added: int = 0
+    credits_now: int = 0
+    already_processed: bool = False
 
 
 # -----------------------------
@@ -907,11 +1007,47 @@ def debug_env():
         "has_access_token_secret": bool(_clean_env_secret(os.getenv("ACCESS_TOKEN_SECRET", "") or "")),
         "access_token_secret_fp": fp(os.getenv("ACCESS_TOKEN_SECRET", "") or ""),
         "stripe_mode": get_stripe_mode(),
+        "has_webhook_secret": bool(_clean_env_secret(os.getenv("STRIPE_WEBHOOK_SECRET", "") or "")),
     }
 
 
 # -----------------------------
-# AUTH: Stripe session -> token
+# Stripe webhook (FIX 404)
+# -----------------------------
+@app.post("/stripe/webhook")
+async def stripe_webhook(request: Request) -> Dict[str, Any]:
+    stripe_enabled_or_throw()
+
+    webhook_secret = (os.getenv("STRIPE_WEBHOOK_SECRET", "") or "").strip()
+    if not webhook_secret:
+        raise HTTPException(status_code=500, detail="STRIPE_WEBHOOK_SECRET not set")
+
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature")
+    if not sig_header:
+        raise HTTPException(status_code=400, detail="missing stripe-signature header")
+
+    try:
+        event = stripe.Webhook.construct_event(payload=payload, sig_header=sig_header, secret=webhook_secret)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"invalid webhook signature: {e}")
+
+    event_type = event.get("type")
+    obj = (event.get("data") or {}).get("object") or {}
+
+    # We only care about session completion
+    if event_type in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):
+        session_id = (obj.get("id") or "").strip()
+        if session_id:
+            # Best-effort: grant credits (idempotent by session_id)
+            res = grant_credits_from_session(session_id)
+            return {"ok": True, "handled": True, "event_type": event_type, "grant": res}
+
+    return {"ok": True, "handled": False, "event_type": event_type}
+
+
+# -----------------------------
+# AUTH: Stripe session -> token (+ credits)
 # -----------------------------
 @app.post("/auth/issue-from-session", response_model=IssueFromSessionResponse)
 def auth_issue_from_session(payload: IssueFromSessionRequest) -> IssueFromSessionResponse:
@@ -921,27 +1057,30 @@ def auth_issue_from_session(payload: IssueFromSessionRequest) -> IssueFromSessio
     if not session_id:
         raise HTTPException(status_code=400, detail="session_id is required")
 
+    # 1) Grant credits (fallback if webhook delayed/failed)
+    grant = grant_credits_from_session(session_id)
+
+    # 2) Retrieve session again to get email reliably
     try:
         sess = stripe.checkout.Session.retrieve(session_id)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"session lookup failed: {e}")
 
-    if not sess:
-        raise HTTPException(status_code=400, detail="session not found")
-
-    status = (sess.get("status") or "").lower()
-    payment_status = (sess.get("payment_status") or "").lower()
-
-    if payment_status != "paid":
-        raise HTTPException(status_code=402, detail=f"payment not completed (payment_status={payment_status}, status={status})")
-
-    email = _safe_email_from_session(sess)
+    email = _safe_email_from_session(sess or {})
     if not email:
         raise HTTPException(status_code=400, detail="could not determine customer email from Stripe session")
 
     ensure_user(email)
     tok = issue_token(email=email, ttl_seconds=TOKEN_TTL_SECONDS)
-    return IssueFromSessionResponse(token=tok["token"], exp=tok["exp"], email=tok["email"])
+
+    return IssueFromSessionResponse(
+        token=tok["token"],
+        exp=tok["exp"],
+        email=tok["email"],
+        credits_added=int(grant.get("credits_added") or 0),
+        credits_now=int(get_credits(email)),
+        already_processed=bool(grant.get("already_processed") or False),
+    )
 
 
 # -----------------------------
