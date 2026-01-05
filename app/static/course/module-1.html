@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>MotionForge — Module 1: First Output</title>
+
+  <style>
+    body{
+      margin:0;
+      font-family: Arial, Helvetica, sans-serif;
+      background:#070912;
+      color:#e8ecff;
+    }
+    a{color:inherit;text-decoration:none}
+    .wrap{max-width:900px;margin:0 auto;padding:30px}
+    .card{
+      background:#0b1020;
+      border-radius:18px;
+      padding:24px;
+      margin-bottom:22px;
+      border:1px solid rgba(255,255,255,0.08);
+    }
+    h1{font-size:34px;margin:0 0 12px}
+    h2{margin-top:24px}
+    p{color:#a9b2d6;line-height:1.6}
+    ul{padding-left:18px;color:#a9b2d6;line-height:1.6}
+    li{margin:8px 0}
+
+    .pill{
+      display:inline-block;
+      font-size:12px;
+      font-weight:800;
+      letter-spacing:.6px;
+      padding:6px 10px;
+      border-radius:999px;
+      border:1px solid rgba(255,255,255,0.12);
+      background:rgba(255,255,255,0.04);
+      margin-bottom:12px;
+    }
+
+    .btn{
+      display:inline-block;
+      padding:12px 18px;
+      border-radius:12px;
+      font-weight:800;
+      background:#11172f;
+      border:1px solid rgba(255,255,255,0.15);
+      margin-top:14px;
+    }
+    .btn:hover{filter:brightness(1.08)}
+
+    .highlight{
+      background:rgba(255,255,255,0.04);
+      border:1px dashed rgba(255,255,255,0.18);
+      padding:16px;
+      border-radius:14px;
+      margin-top:18px;
+    }
+  </style>
+</head>
+
+<body>
+<div class="wrap">
+
+  <div class="card">
+    <span class="pill">MODULE 1</span>
+    <h1>First Output — Publish Today</h1>
+
+    <p>
+      This course is not about theory.  
+      It is about <strong>output</strong>.
+      Momentum beats perfection — every single time.
+    </p>
+
+    <div class="highlight">
+      <strong>Your only goal today:</strong><br/>
+      Publish <strong>one Short</strong>.  
+      Even if it feels average. Especially if it feels average.
+    </div>
+
+    <h2>Step 1 — Pick ONE lane (5 minutes)</h2>
+    <ul>
+      <li>Choose one niche (motivation, facts, history, AI, finance, etc.)</li>
+      <li>Do NOT switch niches for the next 7 days</li>
+      <li>One lane = faster momentum</li>
+    </ul>
+
+    <h2>Step 2 — Pick ONE format</h2>
+    <ul>
+      <li>Voice-over clips</li>
+      <li>Caption-only clips</li>
+      <li>Talking head (optional)</li>
+    </ul>
+
+    <p>
+      You don’t need variety.  
+      You need <strong>repeatability</strong>.
+    </p>
+
+    <h2>Step 3 — Publish (no editing spiral)</h2>
+    <ul>
+      <li>Generate clips with MotionForge</li>
+      <li>Pick one that’s “good enough”</li>
+      <li>Post it today — no delay</li>
+    </ul>
+
+    <div class="highlight">
+      <strong>Rule:</strong><br/>
+      No manual editing unless a clip proves it deserves it.
+    </div>
+
+    <h2>Non-negotiables</h2>
+    <ul>
+      <li>1 upload per day (minimum)</li>
+      <li>No deleting posts</li>
+      <li>No niche hopping</li>
+    </ul>
+
+    <p>
+      Consistency compounds quietly.
+    </p>
+
+    <a class="btn" id="backLink" href="#">← Back to modules</a>
+    <a class="btn" id="nextLink" href="#" style="margin-left:10px;">
+      Next: Module 2 →
+    </a>
+  </div>
+
+</div>
+
+<script>
+  const params = new URLSearchParams(window.location.search);
+  const token = params.get("token");
+
+  if (!token) {
+    window.location.href = "https://getmotionforge.com/course.html";
+  }
+
+  document.getElementById("backLink").href =
+    `/course/?token=${encodeURIComponent(token)}`;
+
+  document.getElementById("nextLink").href =
+    `/course/module-2?token=${encodeURIComponent(token)}`;
+</script>
+
+</body>
+</html>
+
