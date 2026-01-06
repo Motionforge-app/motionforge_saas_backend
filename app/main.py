@@ -68,7 +68,8 @@ def status() -> Dict[str, Any]:
 # -----------------------------------------------------------------------------
 @app.get("/course/")
 def course_index(request: Request):
-    return serve_course_file("index.html")
+    return serve_course_file("course.html")
+
 
 
 # IMPORTANT:
