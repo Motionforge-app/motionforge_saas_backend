@@ -1,0 +1,207 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN" "http://www.w3.org/TR/html4/strict.dtd">
+<html>
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+  <meta http-equiv="Content-Style-Type" content="text/css">
+  <title></title>
+  <meta name="Generator" content="Cocoa HTML Writer">
+  <meta name="CocoaVersion" content="2685.2">
+  <style type="text/css">
+    p.p1 {margin: 0.0px 0.0px 0.0px 0.0px; font: 12.0px Helvetica}
+    p.p2 {margin: 0.0px 0.0px 0.0px 0.0px; font: 12.0px Helvetica; min-height: 14.0px}
+  </style>
+</head>
+<body>
+<p class="p1">&lt;!DOCTYPE html&gt;</p>
+<p class="p1">&lt;html lang="en"&gt;</p>
+<p class="p1">&lt;head&gt;</p>
+<p class="p1"><span class="Apple-converted-space">  </span>&lt;meta charset="UTF-8" /&gt;</p>
+<p class="p1"><span class="Apple-converted-space">  </span>&lt;meta name="viewport" content="width=device-width, initial-scale=1.0" /&gt;</p>
+<p class="p1"><span class="Apple-converted-space">  </span>&lt;title&gt;MotionForge — Creator Growth Course&lt;/title&gt;</p>
+<p class="p1"><span class="Apple-converted-space">  </span>&lt;style&gt;</p>
+<p class="p1"><span class="Apple-converted-space">    </span>:root{</p>
+<p class="p1"><span class="Apple-converted-space">      </span>--bg:#070912;</p>
+<p class="p1"><span class="Apple-converted-space">      </span>--card:#0b1020;</p>
+<p class="p1"><span class="Apple-converted-space">      </span>--soft:rgba(255,255,255,.06);</p>
+<p class="p1"><span class="Apple-converted-space">      </span>--line:rgba(255,255,255,.10);</p>
+<p class="p1"><span class="Apple-converted-space">      </span>--text:#e8ecff;</p>
+<p class="p1"><span class="Apple-converted-space">      </span>--muted:#a9b2d6;</p>
+<p class="p1"><span class="Apple-converted-space">      </span>--muted2:#8f98be;</p>
+<p class="p1"><span class="Apple-converted-space">      </span>--accent:rgba(0,234,255,.18);</p>
+<p class="p1"><span class="Apple-converted-space">      </span>--accentLine:rgba(0,234,255,.28);</p>
+<p class="p1"><span class="Apple-converted-space">    </span>}</p>
+<p class="p1"><span class="Apple-converted-space">    </span>*{box-sizing:border-box}</p>
+<p class="p1"><span class="Apple-converted-space">    </span>body{margin:0;font-family:Arial,Helvetica,sans-serif;background:var(--bg);color:var(--text)}</p>
+<p class="p1"><span class="Apple-converted-space">    </span>a{color:inherit;text-decoration:none}</p>
+<p class="p1"><span class="Apple-converted-space">    </span>.wrap{max-width:1040px;margin:0 auto;padding:24px}</p>
+<p class="p1"><span class="Apple-converted-space">    </span>.top{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:16px}</p>
+<p class="p1"><span class="Apple-converted-space">    </span>.brand{display:flex;align-items:center;gap:10px}</p>
+<p class="p1"><span class="Apple-converted-space">    </span>.logo{width:38px;height:38px;border-radius:12px;background:linear-gradient(135deg,#00eaff,#6a5cff);</p>
+<p class="p1"><span class="Apple-converted-space">      </span>display:flex;align-items:center;justify-content:center;font-weight:900;color:#070912}</p>
+<p class="p1"><span class="Apple-converted-space">    </span>.pill{display:inline-block;font-size:12px;font-weight:800;letter-spacing:.06em;padding:7px 10px;border-radius:999px;</p>
+<p class="p1"><span class="Apple-converted-space">      </span>background:rgba(255,255,255,.08);border:1px solid var(--line)}</p>
+<p class="p1"><span class="Apple-converted-space">    </span>.pill.accent{background:var(--accent);border-color:var(--accentLine)}</p>
+<p class="p1"><span class="Apple-converted-space">    </span>.card{background:var(--card);border:1px solid rgba(255,255,255,.08);border-radius:18px;padding:22px;margin:14px 0}</p>
+<p class="p1"><span class="Apple-converted-space">    </span>h1{font-size:22px;margin:0}</p>
+<p class="p1"><span class="Apple-converted-space">    </span>h2{font-size:18px;margin:0 0 10px 0}</p>
+<p class="p1"><span class="Apple-converted-space">    </span>h3{font-size:16px;margin:0 0 8px 0}</p>
+<p class="p1"><span class="Apple-converted-space">    </span>p{color:var(--muted);line-height:1.6;margin:10px 0 0}</p>
+<p class="p1"><span class="Apple-converted-space">    </span>.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;margin-top:14px}</p>
+<p class="p1"><span class="Apple-converted-space">    </span>.box{background:var(--soft);border:1px solid var(--line);border-radius:16px;padding:16px}</p>
+<p class="p1"><span class="Apple-converted-space">    </span>.muted{font-size:12px;color:var(--muted2);margin-top:10px}</p>
+<p class="p1"><span class="Apple-converted-space">    </span>.btn{display:inline-block;padding:12px 14px;border-radius:12px;font-weight:900;background:#11172f;border:1px solid var(--line)}</p>
+<p class="p1"><span class="Apple-converted-space">    </span>.btn:hover{filter:brightness(1.10)}</p>
+<p class="p1"><span class="Apple-converted-space">    </span>.btnRow{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}</p>
+<p class="p1"><span class="Apple-converted-space">    </span>.checklist{margin:10px 0 0;padding-left:18px;color:var(--muted)}</p>
+<p class="p1"><span class="Apple-converted-space">    </span>.checklist li{margin:8px 0}</p>
+<p class="p1"><span class="Apple-converted-space">    </span>.note{margin:12px 0 0;padding:12px 14px;border-radius:14px;background:var(--soft);border:1px solid var(--line);color:var(--text)}</p>
+<p class="p1"><span class="Apple-converted-space">    </span>code.inline{background:rgba(255,255,255,.08);padding:2px 6px;border-radius:8px;border:1px solid rgba(255,255,255,.10);color:#e8ecff}</p>
+<p class="p1"><span class="Apple-converted-space">    </span>.divider{height:1px;background:rgba(255,255,255,.08);margin:14px 0}</p>
+<p class="p1"><span class="Apple-converted-space">    </span>.nav{display:flex;gap:10px;flex-wrap:wrap}</p>
+<p class="p1"><span class="Apple-converted-space">    </span>.nav a{padding:10px 12px;border-radius:12px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.10);font-weight:900}</p>
+<p class="p1"><span class="Apple-converted-space">    </span>.nav a:hover{filter:brightness(1.12)}</p>
+<p class="p1"><span class="Apple-converted-space">    </span>.section{scroll-margin-top:18px}</p>
+<p class="p1"><span class="Apple-converted-space">  </span>&lt;/style&gt;</p>
+<p class="p1">&lt;/head&gt;</p>
+<p class="p1">&lt;body&gt;</p>
+<p class="p1"><span class="Apple-converted-space">  </span>&lt;div class="wrap"&gt;</p>
+<p class="p1"><span class="Apple-converted-space">    </span>&lt;div class="top"&gt;</p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;div class="brand"&gt;</p>
+<p class="p1"><span class="Apple-converted-space">        </span>&lt;div class="logo"&gt;M&lt;/div&gt;</p>
+<p class="p1"><span class="Apple-converted-space">        </span>&lt;div&gt;</p>
+<p class="p1"><span class="Apple-converted-space">          </span>&lt;div class="pill accent"&gt;CREATOR GROWTH COURSE&lt;/div&gt;</p>
+<p class="p1"><span class="Apple-converted-space">          </span>&lt;h1&gt;MotionForge — One-Page Course&lt;/h1&gt;</p>
+<p class="p1"><span class="Apple-converted-space">        </span>&lt;/div&gt;</p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;/div&gt;</p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;div class="nav"&gt;</p>
+<p class="p1"><span class="Apple-converted-space">        </span>&lt;a href="#start"&gt;Start&lt;/a&gt;</p>
+<p class="p1"><span class="Apple-converted-space">        </span>&lt;a href="#m1"&gt;Module 1&lt;/a&gt;</p>
+<p class="p1"><span class="Apple-converted-space">        </span>&lt;a href="#m2"&gt;Module 2&lt;/a&gt;</p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;/div&gt;</p>
+<p class="p1"><span class="Apple-converted-space">    </span>&lt;/div&gt;</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">    </span>&lt;div id="accessNote" class="note" style="display:none;"&gt;&lt;/div&gt;</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">    </span>&lt;div id="start" class="card section"&gt;</p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;div class="pill"&gt;READ THIS FIRST&lt;/div&gt;</p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;p&gt;</p>
+<p class="p1"><span class="Apple-converted-space">        </span>This course is built to force output. You will consume credits on purpose.</p>
+<p class="p1"><span class="Apple-converted-space">        </span>By the end you’ll have proof, momentum, and a system — not just “belief”.</p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;/p&gt;</p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;p class="muted"&gt;</p>
+<p class="p1"><span class="Apple-converted-space">        </span>If you opened this without a token: that’s fine for testing. Live customers arrive with a token after checkout.</p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;/p&gt;</p>
+<p class="p1"><span class="Apple-converted-space">    </span>&lt;/div&gt;</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">    </span>&lt;div id="m1" class="card section"&gt;</p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;div class="pill"&gt;MODULE 1&lt;/div&gt;</p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;h2&gt;First Output — Publish Today&lt;/h2&gt;</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;p&gt;</p>
+<p class="p1"><span class="Apple-converted-space">        </span>Your results don’t come from “believing harder”. They come from output that stacks.</p>
+<p class="p1"><span class="Apple-converted-space">        </span>This module ends hesitation and creates proof — today.</p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;/p&gt;</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;div class="grid"&gt;</p>
+<p class="p1"><span class="Apple-converted-space">        </span>&lt;div class="box"&gt;</p>
+<p class="p1"><span class="Apple-converted-space">          </span>&lt;h3&gt;Daily Output Loop&lt;/h3&gt;</p>
+<p class="p1"><span class="Apple-converted-space">          </span>&lt;ul class="checklist"&gt;</p>
+<p class="p1"><span class="Apple-converted-space">            </span>&lt;li&gt;Pick 1 input (one long video).&lt;/li&gt;</p>
+<p class="p1"><span class="Apple-converted-space">            </span>&lt;li&gt;Generate a batch (spend credits).&lt;/li&gt;</p>
+<p class="p1"><span class="Apple-converted-space">            </span>&lt;li&gt;Publish 1 short today.&lt;/li&gt;</p>
+<p class="p1"><span class="Apple-converted-space">          </span>&lt;/ul&gt;</p>
+<p class="p1"><span class="Apple-converted-space">        </span>&lt;/div&gt;</p>
+<p class="p1"><span class="Apple-converted-space">        </span>&lt;div class="box"&gt;</p>
+<p class="p1"><span class="Apple-converted-space">          </span>&lt;h3&gt;Checklist: Publish Today&lt;/h3&gt;</p>
+<p class="p1"><span class="Apple-converted-space">          </span>&lt;ul class="checklist"&gt;</p>
+<p class="p1"><span class="Apple-converted-space">            </span>&lt;li&gt;Pick one niche + one promise.&lt;/li&gt;</p>
+<p class="p1"><span class="Apple-converted-space">            </span>&lt;li&gt;Generate 10–20 clips (credits used).&lt;/li&gt;</p>
+<p class="p1"><span class="Apple-converted-space">            </span>&lt;li&gt;Select best 3 by hook strength.&lt;/li&gt;</p>
+<p class="p1"><span class="Apple-converted-space">            </span>&lt;li&gt;Publish 1 clip (YouTube Shorts is enough).&lt;/li&gt;</p>
+<p class="p1"><span class="Apple-converted-space">            </span>&lt;li&gt;Title example: &lt;code class="inline"&gt;One Video → 20 Shorts (No Editing)&lt;/code&gt;&lt;/li&gt;</p>
+<p class="p1"><span class="Apple-converted-space">          </span>&lt;/ul&gt;</p>
+<p class="p1"><span class="Apple-converted-space">        </span>&lt;/div&gt;</p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;/div&gt;</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;div class="divider"&gt;&lt;/div&gt;</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;h3&gt;The “Secret” framing (but practical)&lt;/h3&gt;</p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;p&gt;</p>
+<p class="p1"><span class="Apple-converted-space">        </span>You don’t attract money by wishing. You align by behaving like a creator who ships daily.</p>
+<p class="p1"><span class="Apple-converted-space">        </span>The feeling returns after the proof.</p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;/p&gt;</p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;div class="grid"&gt;</p>
+<p class="p1"><span class="Apple-converted-space">        </span>&lt;div class="box"&gt;</p>
+<p class="p1"><span class="Apple-converted-space">          </span>&lt;h3&gt;Identity statement&lt;/h3&gt;</p>
+<p class="p1"><span class="Apple-converted-space">          </span>&lt;p&gt;“I am the person who publishes daily. My output creates my reality.”&lt;/p&gt;</p>
+<p class="p1"><span class="Apple-converted-space">        </span>&lt;/div&gt;</p>
+<p class="p1"><span class="Apple-converted-space">        </span>&lt;div class="box"&gt;</p>
+<p class="p1"><span class="Apple-converted-space">          </span>&lt;h3&gt;Micro-visualization (30s)&lt;/h3&gt;</p>
+<p class="p1"><span class="Apple-converted-space">          </span>&lt;p&gt;Picture the dashboard: sales, refills, and your house becoming a timeline — not a fantasy.&lt;/p&gt;</p>
+<p class="p1"><span class="Apple-converted-space">        </span>&lt;/div&gt;</p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;/div&gt;</p>
+<p class="p1"><span class="Apple-converted-space">    </span>&lt;/div&gt;</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">    </span>&lt;div id="m2" class="card section"&gt;</p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;div class="pill"&gt;MODULE 2&lt;/div&gt;</p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;h2&gt;The Short-Form Machine&lt;/h2&gt;</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;p&gt;</p>
+<p class="p1"><span class="Apple-converted-space">        </span>Today you build a repeatable system: 20–30 shorts per long video. You will spend credits on purpose.</p>
+<p class="p1"><span class="Apple-converted-space">        </span>If you avoid spending credits, you avoid momentum.</p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;/p&gt;</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;div class="grid"&gt;</p>
+<p class="p1"><span class="Apple-converted-space">        </span>&lt;div class="box"&gt;</p>
+<p class="p1"><span class="Apple-converted-space">          </span>&lt;h3&gt;The 3-file system&lt;/h3&gt;</p>
+<p class="p1"><span class="Apple-converted-space">          </span>&lt;ul class="checklist"&gt;</p>
+<p class="p1"><span class="Apple-converted-space">            </span>&lt;li&gt;&lt;strong&gt;Niche file:&lt;/strong&gt; one niche, one promise (7 days, no switching).&lt;/li&gt;</p>
+<p class="p1"><span class="Apple-converted-space">            </span>&lt;li&gt;&lt;strong&gt;Input file:&lt;/strong&gt; list of long videos you can clip.&lt;/li&gt;</p>
+<p class="p1"><span class="Apple-converted-space">            </span>&lt;li&gt;&lt;strong&gt;Output file:&lt;/strong&gt; winners + hooks + what to repeat.&lt;/li&gt;</p>
+<p class="p1"><span class="Apple-converted-space">          </span>&lt;/ul&gt;</p>
+<p class="p1"><span class="Apple-converted-space">        </span>&lt;/div&gt;</p>
+<p class="p1"><span class="Apple-converted-space">        </span>&lt;div class="box"&gt;</p>
+<p class="p1"><span class="Apple-converted-space">          </span>&lt;h3&gt;45-minute build (do today)&lt;/h3&gt;</p>
+<p class="p1"><span class="Apple-converted-space">          </span>&lt;ul class="checklist"&gt;</p>
+<p class="p1"><span class="Apple-converted-space">            </span>&lt;li&gt;0–10: pick 1 long video + format.&lt;/li&gt;</p>
+<p class="p1"><span class="Apple-converted-space">            </span>&lt;li&gt;10–25: generate 20–30 shorts (credits used), save best 5.&lt;/li&gt;</p>
+<p class="p1"><span class="Apple-converted-space">            </span>&lt;li&gt;25–45: publish 1 clip with strongest first second.&lt;/li&gt;</p>
+<p class="p1"><span class="Apple-converted-space">          </span>&lt;/ul&gt;</p>
+<p class="p1"><span class="Apple-converted-space">        </span>&lt;/div&gt;</p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;/div&gt;</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;div class="divider"&gt;&lt;/div&gt;</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;h3&gt;Hook templates&lt;/h3&gt;</p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;div class="grid"&gt;</p>
+<p class="p1"><span class="Apple-converted-space">        </span>&lt;div class="box"&gt;&lt;h3&gt;Stop doing this&lt;/h3&gt;&lt;p&gt;“Stop editing like this — here’s the 10-minute way.”&lt;/p&gt;&lt;/div&gt;</p>
+<p class="p1"><span class="Apple-converted-space">        </span>&lt;div class="box"&gt;&lt;h3&gt;The hidden trick&lt;/h3&gt;&lt;p&gt;“Nobody tells you this, but it’s why most Shorts die.”&lt;/p&gt;&lt;/div&gt;</p>
+<p class="p1"><span class="Apple-converted-space">        </span>&lt;div class="box"&gt;&lt;h3&gt;The number claim&lt;/h3&gt;&lt;p&gt;“One video → 20 Shorts. Here’s the system.”&lt;/p&gt;&lt;/div&gt;</p>
+<p class="p1"><span class="Apple-converted-space">        </span>&lt;div class="box"&gt;&lt;h3&gt;The mistake&lt;/h3&gt;&lt;p&gt;“You’re losing views because your first second is weak.”&lt;/p&gt;&lt;/div&gt;</p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;/div&gt;</p>
+<p class="p1"><span class="Apple-converted-space">    </span>&lt;/div&gt;</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">    </span>&lt;div class="card"&gt;</p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;div class="pill"&gt;NEXT&lt;/div&gt;</p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;p class="muted"&gt;Later we’ll add Modules 3–6 here as extra sections — no extra files needed.&lt;/p&gt;</p>
+<p class="p1"><span class="Apple-converted-space">    </span>&lt;/div&gt;</p>
+<p class="p1"><span class="Apple-converted-space">  </span>&lt;/div&gt;</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">  </span>&lt;script&gt;</p>
+<p class="p1"><span class="Apple-converted-space">    </span>(function () {</p>
+<p class="p1"><span class="Apple-converted-space">      </span>const params = new URLSearchParams(window.location.search);</p>
+<p class="p1"><span class="Apple-converted-space">      </span>const token = params.get("token");</p>
+<p class="p1"><span class="Apple-converted-space">      </span>if (!token) {</p>
+<p class="p1"><span class="Apple-converted-space">        </span>const note = document.getElementById("accessNote");</p>
+<p class="p1"><span class="Apple-converted-space">        </span>if (note) {</p>
+<p class="p1"><span class="Apple-converted-space">          </span>note.style.display = "block";</p>
+<p class="p1"><span class="Apple-converted-space">          </span>note.innerHTML =</p>
+<p class="p1"><span class="Apple-converted-space">            </span>"&lt;strong&gt;Access note:&lt;/strong&gt; You opened this course without an access token. That’s fine for testing. Live customers arrive here with a token after checkout.";</p>
+<p class="p1"><span class="Apple-converted-space">        </span>}</p>
+<p class="p1"><span class="Apple-converted-space">      </span>}</p>
+<p class="p1"><span class="Apple-converted-space">    </span>})();</p>
+<p class="p1"><span class="Apple-converted-space">  </span>&lt;/script&gt;</p>
+<p class="p1">&lt;/body&gt;</p>
+<p class="p1">&lt;/html&gt;</p>
+</body>
+</html>
