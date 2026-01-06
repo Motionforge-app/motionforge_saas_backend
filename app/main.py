@@ -363,9 +363,9 @@ def status() -> Dict[str, Any]:
 def course_index(request: Request):
     try:
         _require_course_token(request)
-    except HTTPException:
-        return _course_redirect()
-    return _serve_course_file("index.html")
+       except HTTPException:
+        return _serve_course_file("index.html")
+
 
 
 # Serve /course/module-1  and /course/module-1.html (both)
