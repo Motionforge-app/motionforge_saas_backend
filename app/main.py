@@ -43,8 +43,12 @@ ADMIN_KEY = os.getenv("ADMIN_KEY", "")
 CORS_ORIGINS_RAW = os.getenv("CORS_ORIGINS", "https://www.getmotionforge.com")
 CORS_ORIGINS = [o.strip() for o in CORS_ORIGINS_RAW.split(",") if o.strip()]
 
-# Where to send people if they try to access the course without a valid token
-COURSE_SALES_URL = os.getenv("COURSE_SALES_URL", "https://getmotionforge.com/course.html")
+# Where to send people if they try to access the course without a valid token 
+COURSE_SALES_URL = os.getenv(
+    "COURSE_SALES_URL",
+    "https://motionforgesaasbackend-production.up.railway.app/course/"
+)
+
 
 # Stripe
 if STRIPE_SECRET_KEY:
