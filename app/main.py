@@ -66,9 +66,12 @@ def status() -> Dict[str, Any]:
 # -----------------------------------------------------------------------------
 # Course routes (STABLE – NO REDIRECT LOOPS)
 # -----------------------------------------------------------------------------
-@app.get("/course/")
+from fastapi.responses import HTMLResponse
+
+@app.get("/course/", response_class=HTMLResponse)
 def course_index(request: Request):
     return serve_course_file("course.html")
+
 
 
 
