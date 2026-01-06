@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>MotionForge — Module 1: First Output</title>
+
+  <style>
+    :root{
+      --bg:#070912;
+      --card:#0b1020;
+      --soft:rgba(255,255,255,.06);
+      --line:rgba(255,255,255,.10);
+      --text:#e8ecff;
+      --muted:#a9b2d6;
+      --muted2:#8f98be;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:Arial,Helvetica,sans-serif;background:var(--bg);color:var(--text)}
+    a{color:inherit;text-decoration:none}
+    .wrap{max-width:980px;margin:0 auto;padding:28px}
+    .top{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+    .brand{display:flex;align-items:center;gap:10px}
+    .logo{width:38px;height:38px;border-radius:12px;background:linear-gradient(135deg,#00eaff,#6a5cff);
+      display:flex;align-items:center;justify-content:center;font-weight:900;color:#070912}
+    .pill{display:inline-block;font-size:12px;font-weight:800;letter-spacing:.06em;padding:7px 10px;border-radius:999px;
+      background:rgba(255,255,255,.08);border:1px solid var(--line)}
+    .card{background:var(--card);border:1px solid rgba(255,255,255,.08);border-radius:18px;padding:22px;margin:14px 0}
+    h1{font-size:22px;margin:0}
+    h2{font-size:18px;margin:0 0 10px 0}
+    p{color:var(--muted);line-height:1.6;margin:10px 0 0}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;margin-top:14px}
+    .box{background:var(--soft);border:1px solid var(--line);border-radius:16px;padding:16px}
+    .box h3{margin:0 0 8px 0;font-size:16px}
+    .muted{font-size:12px;color:var(--muted2);margin-top:10px}
+    .btn{display:inline-block;padding:12px 14px;border-radius:12px;font-weight:900;background:#11172f;border:1px solid var(--line)}
+    .btn:hover{filter:brightness(1.10)}
+    .btnRow{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}
+    .checklist{margin:10px 0 0;padding-left:18px;color:var(--muted)}
+    .checklist li{margin:8px 0}
+    .note{margin-top:12px;padding:12px 14px;border-radius:14px;background:var(--soft);border:1px solid var(--line);color:var(--text)}
+    code.inline{background:rgba(255,255,255,.08);padding:2px 6px;border-radius:8px;border:1px solid rgba(255,255,255,.10);color:#e8ecff}
+    .divider{height:1px;background:rgba(255,255,255,.08);margin:14px 0}
+  </style>
+</head>
+
+<body>
+  <div class="wrap">
+
+    <div class="top">
+      <div class="brand">
+        <div class="logo">M</div>
+        <div>
+          <div class="pill">MODULE 1</div>
+          <h1>First Output — Publish Today</h1>
+        </div>
+      </div>
+      <div class="btnRow">
+        <a class="btn" id="backBtn" href="./index.html">Back to Course</a>
+        <a class="btn" id="nextBtn" href="./module-2.html">Open Module 2</a>
+      </div>
+    </div>
+
+    <div id="accessNote" class="note" style="display:none;"></div>
+
+    <div class="card">
+      <div class="pill">THE MOMENT</div>
+      <p>
+        Your results don’t come from “believing harder”. They come from output that stacks.
+        This module is designed to end the hesitation cycle and create proof — today.
+      </p>
+      <p>
+        Some people will read this and keep dreaming. Others will publish and start compounding.
+        Choose which person you are, and then act like it’s inevitable.
+      </p>
+      <p class="muted">
+        Rule: No perfection. One publish beats ten plans.
+      </p>
+    </div>
+
+    <div class="card">
+      <h2>Your Daily Output Loop (non-negotiable)</h2>
+      <div class="grid">
+        <div class="box">
+          <h3>Step A — One input</h3>
+          <p>Pick one long-form video (or one recorded segment). No browsing for “the perfect one”.</p>
+        </div>
+        <div class="box">
+          <h3>Step B — Spend credits on purpose</h3>
+          <p>Create a batch of clips. Credits are meant to be consumed. This forces action.</p>
+        </div>
+        <div class="box">
+          <h3>Step C — Publish one</h3>
+          <p>Publish 1 short today. Not tomorrow. Proof beats motivation.</p>
+        </div>
+      </div>
+
+      <div class="divider"></div>
+
+      <h2>Checklist: Publish Today</h2>
+      <ul class="checklist">
+        <li>Pick one niche + one promise (example: “AI tools that save hours”).</li>
+        <li>Generate 10–20 clips from one long video (spend credits).</li>
+        <li>Select the best 3 clips by retention potential (hook in first 1 second).</li>
+        <li>Publish 1 clip to one platform (YouTube Shorts is fine).</li>
+        <li>Write a simple title: <code class="inline">“One Video → 20 Shorts (No Editing)”</code></li>
+      </ul>
+
+      <p class="muted">
+        If you can’t decide: publish the clip that starts with a strong claim or a “how-to”.
+      </p>
+    </div>
+
+    <div class="card">
+      <h2>The “Secret” framing (but practical)</h2>
+      <p>
+        You don’t “attract” money by wishing. You align by behaving like a creator who ships daily.
+        The feeling returns after the proof.
+      </p>
+      <div class="grid">
+        <div class="box">
+          <h3>Identity statement (read once)</h3>
+          <p>
+            “I am the person who publishes daily. My output creates my reality.
+            I don’t wait for confidence — I create it.”
+          </p>
+        </div>
+        <div class="box">
+          <h3>Micro-visualization (30 seconds)</h3>
+          <p>
+            Visualize the dashboard: sales notifications, refills, and the calm certainty
+            that your house is a project on a timeline — not a fantasy.
+          </p>
+        </div>
+      </div>
+      <p class="muted">
+        Then do the work. Visualization is the spark; execution is the engine.
+      </p>
+    </div>
+
+    <div class="card">
+      <h2>What to do next</h2>
+      <div class="grid">
+        <div class="box">
+          <h3>Option 1 — You already published today</h3>
+          <p>Go to Module 2 and scale your clip machine. Volume = leverage.</p>
+          <div class="btnRow">
+            <a class="btn" id="nextBtn2" href="./module-2.html">Go to Module 2</a>
+          </div>
+        </div>
+        <div class="box">
+          <h3>Option 2 — You didn’t publish yet</h3>
+          <p>Stop reading. Generate clips now. Publish one. Come back after.</p>
+          <div class="btnRow">
+            <a class="btn" id="backBtn2" href="./index.html">Back to Dashboard</a>
+          </div>
+        </div>
+      </div>
+      <p class="muted">
+        If something breaks: do not spiral. Simplify. One publish. One day at a time.
+      </p>
+    </div>
+
+  </div>
+
+  <script>
+    (function () {
+      const params = new URLSearchParams(window.location.search);
+      const token = params.get("token");
+
+      // Update navigation links to carry token if present.
+      const linksToUpdate = ["backBtn", "nextBtn", "nextBtn2", "backBtn2"];
+      linksToUpdate.forEach((id) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const url = new URL(el.getAttribute("href"), window.location.href);
+        if (token) url.searchParams.set("token", token);
+        el.setAttribute("href", url.pathname + (token ? ("?token=" + encodeURIComponent(token)) : ""));
+      });
+
+      // If no token: show a clean note, never redirect.
+      if (!token) {
+        const note = document.getElementById("accessNote");
+        if (note) {
+          note.style.display = "block";
+          note.innerHTML = "<strong>Access note:</strong> You opened this module without an access token. That’s fine for local testing. On the live site, you will arrive here with your token after checkout.";
+        }
+      }
+    })();
+  </script>
+</body>
+</html>
+!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>MotionForge — Module 1: First Output</title>
+
+  <style>
+    body{
+      margin:0;
+      font-family: Arial, Helvetica, sans-serif;
+      background:#070912;
+      color:#e8ecff;
+    }
+    a{color:inherit;text-decoration:none}
+    .wrap{max-width:900px;margin:0 auto;padding:30px}
+    .card{
+      background:#0b1020;
+      border-radius:18px;
+      padding:24px;
+      margin-bottom:22px;
+      border:1px solid rgba(255,255,255,0.08);
+    }
+    h1{font-size:34px;margin:0 0 12px}
+    h2{margin-top:24px}
+    p{color:#a9b2d6;line-height:1.6}
+    ul{padding-left:18px;color:#a9b2d6;line-height:1.6}
+    li{margin:8px 0}
+
+    .pill{
+      display:inline-block;
+      font-size:12px;
+      font-weight:800;
+      letter-spacing:.6px;
+      padding:6px 10px;
+      border-radius:999px;
+      border:1px solid rgba(255,255,255,0.12);
+      background:rgba(255,255,255,0.04);
+      margin-bottom:12px;
+    }
+
+    .btn{
+      display:inline-block;
+      padding:12px 18px;
+      border-radius:12px;
+      font-weight:800;
+      background:#11172f;
+      border:1px solid rgba(255,255,255,0.15);
+      margin-top:14px;
+    }
+    .btn:hover{filter:brightness(1.08)}
+
+    .highlight{
+      background:rgba(255,255,255,0.04);
+      border:1px dashed rgba(255,255,255,0.18);
+      padding:16px;
+      border-radius:14px;
+      margin-top:18px;
+    }
+  </style>
+</head>
+
+<body>
+<div class="wrap">
+
+  <div class="card">
+    <span class="pill">MODULE 1</span>
+    <h1>First Output — Publish Today</h1>
+
+    <p>
+      This course is not about theory.  
+      It is about <strong>output</strong>.
+      Momentum beats perfection — every single time.
+    </p>
+
+    <div class="highlight">
+      <strong>Your only goal today:</strong><br/>
+      Publish <strong>one Short</strong>.  
+      Even if it feels average. Especially if it feels average.
+    </div>
+
+    <h2>Step 1 — Pick ONE lane (5 minutes)</h2>
+    <ul>
+      <li>Choose one niche (motivation, facts, history, AI, finance, etc.)</li>
+      <li>Do NOT switch niches for the next 7 days</li>
+      <li>One lane = faster momentum</li>
+    </ul>
+
+    <h2>Step 2 — Pick ONE format</h2>
+    <ul>
+      <li>Voice-over clips</li>
+      <li>Caption-only clips</li>
+      <li>Talking head (optional)</li>
+    </ul>
+
+    <p>
+      You don’t need variety.  
+      You need <strong>repeatability</strong>.
+    </p>
+
+    <h2>Step 3 — Publish (no editing spiral)</h2>
+    <ul>
+      <li>Generate clips with MotionForge</li>
+      <li>Pick one that’s “good enough”</li>
+      <li>Post it today — no delay</li>
+    </ul>
+
+    <div class="highlight">
+      <strong>Rule:</strong><br/>
+      No manual editing unless a clip proves it deserves it.
+    </div>
+
+    <h2>Non-negotiables</h2>
+    <ul>
+      <li>1 upload per day (minimum)</li>
+      <li>No deleting posts</li>
+      <li>No niche hopping</li>
+    </ul>
+
+    <p>
+      Consistency compounds quietly.
+    </p>
+
+    <a class="btn" id="backLink" href="#">← Back to modules</a>
+    <a class="btn" id="nextLink" href="#" style="margin-left:10px;">
+      Next: Module 2 →
+    </a>
+  </div>
+
+</div>
+
+<script>
+  const params = new URLSearchParams(window.location.search);
+  const token = params.get("token");
+
+  if (!token) {
+     // No token in URL: do NOT redirect. Show a clean message and stop.
+  const msg = document.createElement("div");
+  msg.style.background = "rgba(255,255,255,0.06)";
+  msg.style.border = "1px solid rgba(255,255,255,0.12)";
+  msg.style.borderRadius = "14px";
+  msg.style.padding = "14px";
+  msg.style.margin = "16px 0";
+  msg.style.color = "#e8ecff";
+  msg.innerHTML = `
+    <strong>Access note:</strong> You opened this module without an access token.<br/>
+    That’s fine for local testing. On the live site, you’ll arrive here with your token after checkout.
+  `;
+  document.body.prepend(msg);
+  return;
+
+  }
+
+  document.getElementById("backLink").href =
+</html>
+
