@@ -69,7 +69,9 @@ cors_origins = [
 # APP
 # ============================================================
 
-app = FastAPI(title=APP_NAME)
+print("MAIN APP LOADED")
+print("ROUTES:", [r.path for r in app.routes])
+
 
 app.add_middleware(
     CORSMiddleware,
