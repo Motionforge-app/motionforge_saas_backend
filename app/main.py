@@ -17,7 +17,7 @@ import stripe
 app = FastAPI(title="motionforge_saas_backend")
 
 # ----------------------------
-# CORS (CRITICAL for browser fetch from getmotionforge.com)
+# CORS
 # ----------------------------
 app.add_middleware(
     CORSMiddleware,
@@ -38,11 +38,10 @@ app.add_middleware(
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
 if not STRIPE_SECRET_KEY:
     raise RuntimeError("STRIPE_SECRET_KEY not set")
-
 stripe.api_key = STRIPE_SECRET_KEY
 
 # ----------------------------
-# Admin key (optional manual credit ops)
+# Admin key (optional)
 # ----------------------------
 ADMIN_KEY = os.getenv("ADMIN_KEY") or os.getenv("ADMIN_APP_KEY") or ""
 
@@ -51,16 +50,20 @@ ADMIN_KEY = os.getenv("ADMIN_KEY") or os.getenv("ADMIN_APP_KEY") or ""
 # ----------------------------
 PRICE_TO_CREDITS: Dict[str, int] = {
     # Tester Pack $5 → 10 credits
-    "price_1Sjzy32L998MB1DP0pYyuyTY": 10,
+    # You have TWO similar IDs in the wild; support both (0 vs O).
+    "price_1Sjzy32L998MB1DP0pYyuyTY": 10,  # ...DP0...
+    "price_1Sjzy32L998MB1DPOpYyuyTY": 10,  # ...DPO... (THIS is the one Stripe returned)
+
     # Creator Pack $97 → 50 credits
     "price_1Sd90A2L998MB1DPzBnPWnTA": 50,
+
     # Refill 250 → 250 credits
     "price_1Sh7La2L998MB1DPtfvTv31N": 250,
+
     # Refill 500 → 500 credits
     "price_1Sh7Px2L998MB1DPQcQbGLfR": 500,
 }
 
-# Optional override/merge via env JSON: {"price_x":123}
 _env_map = os.getenv("PRICE_TO_CREDITS_JSON")
 if _env_map:
     try:
@@ -69,16 +72,14 @@ if _env_map:
         pass
 
 # ----------------------------
-# SQLite (simple persistence)
+# SQLite
 # ----------------------------
 DB_PATH = os.getenv("MF_DB_PATH", "motionforge.db")
-
 
 def db() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
-
 
 def init_db() -> None:
     with db() as conn:
@@ -105,26 +106,23 @@ def init_db() -> None:
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_credit_events_session ON credit_events(session_id)")
 
-
 @app.on_event("startup")
 def _startup():
     init_db()
 
-
 # ----------------------------
-# Token helpers (mf_ base64 JSON)
+# Token helpers
 # ----------------------------
 def issue_token_for_email(email: str) -> str:
     payload = {"email": email, "iat": int(time.time())}
     token = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
     return f"mf_{token}"
 
-
 def decode_token(token: str) -> Dict[str, Any]:
     if not token or not token.startswith("mf_"):
         raise HTTPException(status_code=401, detail="Invalid token")
 
-    raw = token[3:]  # strip "mf_"
+    raw = token[3:]
     pad = "=" * ((4 - (len(raw) % 4)) % 4)
 
     try:
@@ -138,22 +136,19 @@ def decode_token(token: str) -> Dict[str, Any]:
 
     return payload
 
-
 def bearer_token_from_auth_header(request: Request) -> str:
     auth = request.headers.get("authorization") or request.headers.get("Authorization") or ""
     if not auth.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Missing bearer token")
     return auth.split(" ", 1)[1].strip()
 
-
 # ----------------------------
-# Credits storage ops
+# Credits ops
 # ----------------------------
 def get_credits(email: str) -> int:
     with db() as conn:
         row = conn.execute("SELECT credits FROM credits WHERE email = ?", (email,)).fetchone()
         return int(row["credits"]) if row else 0
-
 
 def add_credits(email: str, amount: int) -> int:
     if amount <= 0:
@@ -175,7 +170,6 @@ def add_credits(email: str, amount: int) -> int:
             )
         return new_val
 
-
 def record_event(email: str, session_id: Optional[str], price_id: Optional[str], credits_added: int) -> None:
     now = int(time.time())
     with db() as conn:
@@ -184,15 +178,14 @@ def record_event(email: str, session_id: Optional[str], price_id: Optional[str],
             (email, session_id, price_id, int(credits_added), now),
         )
 
-
-def session_already_granted(session_id: str) -> bool:
+def session_has_positive_grant(session_id: str) -> bool:
+    """Idempotency rule: only block re-processing if we already granted > 0 credits for this session."""
     with db() as conn:
         row = conn.execute(
-            "SELECT 1 FROM credit_events WHERE session_id = ? LIMIT 1",
+            "SELECT 1 FROM credit_events WHERE session_id = ? AND credits_added > 0 LIMIT 1",
             (session_id,),
         ).fetchone()
         return row is not None
-
 
 # ----------------------------
 # Health
@@ -201,9 +194,8 @@ def session_already_granted(session_id: str) -> bool:
 def health():
     return {"status": "ok"}
 
-
 # ----------------------------
-# Credits API (used by tool.html)
+# Credits API (tool.html depends on this)
 # ----------------------------
 @app.get("/credits")
 def credits(request: Request):
@@ -212,9 +204,8 @@ def credits(request: Request):
     email = payload["email"]
     return {"ok": True, "email": email, "credits": get_credits(email)}
 
-
 # ----------------------------
-# Admin: add credits manually (optional)
+# Admin add (optional)
 # ----------------------------
 @app.post("/credits/admin/add")
 def admin_add(email: str, amount: int, request: Request):
@@ -225,13 +216,12 @@ def admin_add(email: str, amount: int, request: Request):
     record_event(email=email, session_id=None, price_id=None, credits_added=amount)
     return {"ok": True, "email": email, "credits": new_val}
 
-
 # ----------------------------
 # Stripe → Access + credit grant
 # ----------------------------
 @app.get("/auth/access-from-session")
 def access_from_session(session_id: str):
-    # 1) Retrieve session (for email)
+    # 1) Retrieve session (email)
     try:
         session = stripe.checkout.Session.retrieve(session_id)
     except Exception as e:
@@ -246,13 +236,14 @@ def access_from_session(session_id: str):
     if not email:
         raise HTTPException(status_code=400, detail="No email found on Stripe session")
 
-    # 2) Idempotency: do NOT grant twice for the same session_id
     credits_added_total = 0
     seen_price_ids: List[str] = []
 
-    if not session_already_granted(session_id):
-        # 3) Determine credits from line items (RELIABLE)
-        grants: List[Tuple[str, int]] = []  # (price_id, credits_added_for_that_item)
+    # 2) Only block if we already granted >0 for this session
+    if not session_has_positive_grant(session_id):
+        grants: List[Tuple[str, int]] = []
+
+        # 3) Reliable line-items fetch
         try:
             items = stripe.checkout.Session.list_line_items(session_id, limit=100)
             for item in items.data:
@@ -277,13 +268,13 @@ def access_from_session(session_id: str):
             seen_price_ids = []
             grants = []
 
-        # 4) Apply credits + record events
+        # 4) Apply + record
         if credits_added_total > 0:
             add_credits(email, credits_added_total)
             for pid, amt in grants:
                 record_event(email=email, session_id=session_id, price_id=pid, credits_added=amt)
         else:
-            # Still record something so we can see session_id was processed (prevents infinite re-grants)
+            # Keep a trace for debugging, but allow future re-tries (since it was 0)
             record_event(email=email, session_id=session_id, price_id="(no_match)", credits_added=0)
 
     # 5) Token + URLs
