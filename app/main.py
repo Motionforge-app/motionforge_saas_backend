@@ -6,12 +6,29 @@ import base64
 import json
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 import stripe
 
 # ----------------------------
 # App
 # ----------------------------
 app = FastAPI(title="motionforge_saas_backend")
+
+# ----------------------------
+# CORS (CRITICAL for browser fetch from getmotionforge.com)
+# ----------------------------
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://www.getmotionforge.com",
+        "http://localhost",
+        "http://localhost:3000",
+        "http://localhost:5173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ----------------------------
 # Stripe
@@ -43,7 +60,7 @@ def health():
     return {"status": "ok"}
 
 # ----------------------------
-# Stripe → Course access
+# Stripe → Course/Tool access
 # ----------------------------
 @app.get("/auth/access-from-session")
 def access_from_session(session_id: str):
@@ -63,5 +80,14 @@ def access_from_session(session_id: str):
 
     token = issue_token_for_email(email)
 
-    course_url = f"https://www.getmotionforge.com/course.html?token={token}"
-    return {"course_url": course_url}
+    # Include session_id in course_url so course can always bounce back to access.html?session_id=...
+    course_url = f"https://www.getmotionforge.com/course.html?token={token}&session_id={session_id}"
+
+    # Direct tool URL (best for demo + avoiding loops)
+    tool_url = f"https://www.getmotionforge.com/tool.html?token={token}"
+
+    return {
+        "course_url": course_url,
+        "tool_url": tool_url,
+        "token": token,
+    }
