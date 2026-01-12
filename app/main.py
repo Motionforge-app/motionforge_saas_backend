@@ -417,7 +417,7 @@ def checkout_create(payload: Dict[str, Any] = Body(...)):
             }],
             success_url=f"{PUBLIC_BASE_URL}/access.html?session_id={{CHECKOUT_SESSION_ID}}",
             cancel_url=f"{PUBLIC_BASE_URL}/",
-            request_timeout=STRIPE_TIMEOUT_SECONDS,
+            
         )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Stripe create failed: {str(e)}")
