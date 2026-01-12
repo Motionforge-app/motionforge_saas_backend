@@ -248,14 +248,12 @@ def _stripe_retrieve_session(session_id: str) -> stripe.checkout.Session:
     return stripe.checkout.Session.retrieve(
         session_id,
         expand=["line_items.data.price", "customer_details"],
-        request_timeout=STRIPE_TIMEOUT_SECONDS,
     )
 
 def _stripe_list_line_items(session_id: str) -> Any:
     return stripe.checkout.Session.list_line_items(
         session_id,
         limit=100,
-        request_timeout=STRIPE_TIMEOUT_SECONDS,
     )
 
 def _extract_email_from_session(session: stripe.checkout.Session) -> Optional[str]:
