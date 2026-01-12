@@ -309,6 +309,18 @@ def health():
         "price_ids_loaded": list(PRICE_TO_CREDITS.keys()),
         "stripe_request_timeout_seconds": STRIPE_TIMEOUT_SECONDS,
     }
+@app.get("/stripe/account")
+def stripe_account():
+    try:
+        acct = stripe.Account.retrieve()
+        return {
+            "ok": True,
+            "account_id": getattr(acct, "id", None),
+            "country": getattr(acct, "country", None),
+            "default_currency": getattr(acct, "default_currency", None),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Stripe account retrieve failed: {str(e)}")
 
 @app.get("/credits")
 def credits(request: Request):
