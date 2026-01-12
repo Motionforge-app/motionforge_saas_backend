@@ -319,6 +319,8 @@ def stripe_account():
             "account_id": getattr(acct, "id", None),
             "country": getattr(acct, "country", None),
             "default_currency": getattr(acct, "default_currency", None),
+"key_type": STRIPE_KEY_TYPE,
+
         }
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Stripe account retrieve failed: {str(e)}")
