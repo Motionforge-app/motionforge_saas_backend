@@ -407,43 +407,50 @@ def access_from_session(session_id: str):
         "credits_added": int(credits_to_add),
         "price_ids": seen_price_ids,
     }
+# Fixed pack catalog (do NOT trust client-sent amounts/credits)
+CHECKOUT_PACKS: Dict[str, Dict[str, Any]] = {
+    "tester":    {"name": "MotionForge — Tester Pack", "currency": "usd", "amount_cents": 500,   "credits": 10},
+    "creator":   {"name": "MotionForge — Creator Pack (50 Credits + Course)", "currency": "usd", "amount_cents": 9700,  "credits": 50},
+    "refill250": {"name": "MotionForge — Credit Refill 250", "currency": "usd", "amount_cents": 29700, "credits": 250},
+    "refill500": {"name": "MotionForge — Credit Refill 500", "currency": "usd", "amount_cents": 49700, "credits": 500},
+}
+
 @app.post("/checkout/create")
 def checkout_create(payload: Dict[str, Any] = Body(...)):
     """
-    Create a Stripe Checkout Session and redirect user to access.html
+    Create a Stripe Checkout Session (no dependency on existing Price IDs).
     Expected payload:
-      {
-        "price_id": "price_....",
-        "quantity": 1
-      }
+      { "pack": "creator" }  # tester | creator | refill250 | refill500
     """
-    price_id = payload.get("price_id")
-    quantity = int(payload.get("quantity", 1) or 1)
+    pack = (payload.get("pack") or "").strip().lower()
+    if pack not in CHECKOUT_PACKS:
+        raise HTTPException(status_code=400, detail="Invalid pack")
 
-    if not price_id or price_id not in PRICE_TO_CREDITS:
-        raise HTTPException(status_code=400, detail="Invalid or unsupported price_id")
+    p = CHECKOUT_PACKS[pack]
 
     try:
         session = stripe.checkout.Session.create(
             mode="payment",
             line_items=[{
-                "price": price_id,
-                "quantity": quantity,
+                "price_data": {
+                    "currency": p["currency"],
+                    "unit_amount": int(p["amount_cents"]),
+                    "product_data": {"name": p["name"]},
+                },
+                "quantity": 1,
             }],
+            metadata={
+                "pack": pack,
+                "credits": str(int(p["credits"])),
+            },
             success_url=f"{PUBLIC_BASE_URL}/access.html?session_id={{CHECKOUT_SESSION_ID}}",
             cancel_url=f"{PUBLIC_BASE_URL}/",
-            
         )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Stripe create failed: {str(e)}")
 
-    return {
-        "ok": True,
-        "checkout_url": session.url,
-        "session_id": session.id,
-    }
+    return {"ok": True, "checkout_url": session.url, "session_id": session.id}
 
-# Optional: avoid 404 spam if Stripe hits a webhook URL you configured earlier
 @app.post("/stripe/webhook")
 async def stripe_webhook(_: Request):
     return {"ok": True}
