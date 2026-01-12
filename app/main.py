@@ -9,9 +9,10 @@ import uuid
 import shutil
 import subprocess
 from pathlib import Path
-from threading import Lock
-from typing import Any, Dict, List, Optional
+from threading import RLock
+from typing import Any, Dict, List, Optional, Tuple
 
+from fastapi import FastAPI, HTTPException, Request, Body
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -29,7 +30,7 @@ DATA_DIR = BASE_DIR / "data"
 UPLOADS_DIR = DATA_DIR / "uploads"
 OUTPUTS_DIR = DATA_DIR / "outputs"
 CREDITS_DB_PATH = DATA_DIR / "credits_db.json"
-GRANTS_DB_PATH = DATA_DIR / "grants_db.json"  # Stripe session_id -> grant record (idempotency)
+GRANTS_DB_PATH = DATA_DIR / "grants_db.json"  # session_id -> grant record (idempotent)
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
@@ -41,17 +42,20 @@ PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://www.getmotionforge.com")
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
 if not STRIPE_SECRET_KEY:
     raise RuntimeError("STRIPE_SECRET_KEY not set")
+
 stripe.api_key = STRIPE_SECRET_KEY
+
+# Keep network behavior predictable
+stripe.max_network_retries = 0
+STRIPE_TIMEOUT_SECONDS = int(os.getenv("STRIPE_TIMEOUT_SECONDS", "15"))  # used as request_timeout
 
 # LIVE Price → credits mapping
 PRICE_TO_CREDITS: Dict[str, int] = {
     # Tester pack $5 -> 10 credits (keep both variants)
     "price_1Sjzy32L998MB1DP0pYyuyTY": 10,
     "price_1Sjzy32L998MB1DPOpYyuyTY": 10,
-
     # Creator Pack $97 -> 50 credits
     "price_1Sd90A2L998MB1DPzBnPWnTA": 50,
-
     # Refills
     "price_1Sh7La2L998MB1DPtfvTv31N": 250,
     "price_1Sh7Px2L998MB1DPQcQbGLfR": 500,
@@ -84,7 +88,8 @@ app.mount("/outputs", StaticFiles(directory=str(OUTPUTS_DIR)), name="outputs")
 # STORAGE (credits + idempotent grants)
 # ============================================================
 
-_db_lock = Lock()
+# MUST be re-entrant to avoid deadlocks when calling helpers inside lock
+_db_lock = RLock()
 
 def _read_json(path: Path, default: Any) -> Any:
     if not path.exists():
@@ -179,7 +184,7 @@ def get_bearer_token(request: Request) -> str:
     return auth.split(" ", 1)[1].strip()
 
 # ============================================================
-# VIDEO TOOLS (optional)
+# VIDEO TOOLS
 # ============================================================
 
 FFMPEG = shutil.which("ffmpeg")
@@ -210,7 +215,6 @@ def split_uniform(input_path: Path, out_dir: Path, clip_seconds: int) -> List[Pa
     out_dir.mkdir(parents=True, exist_ok=True)
     out_pattern = out_dir / "clip_%03d.mp4"
 
-    # copy stream (fast) – if this fails for some codecs, later switch to re-encode
     cmd = [
         "ffmpeg",
         "-y",
@@ -232,6 +236,64 @@ def split_uniform(input_path: Path, out_dir: Path, clip_seconds: int) -> List[Pa
     return clips
 
 # ============================================================
+# STRIPE HELPERS (timeouts!)
+# ============================================================
+
+def _stripe_retrieve_session(session_id: str) -> stripe.checkout.Session:
+    """
+    IMPORTANT: Stripe Python uses request_timeout (not timeout).
+    This prevents hanging requests.
+    """
+    return stripe.checkout.Session.retrieve(
+        session_id,
+        expand=["line_items.data.price", "customer_details"],
+        request_timeout=STRIPE_TIMEOUT_SECONDS,
+    )
+
+def _stripe_list_line_items(session_id: str) -> Any:
+    return stripe.checkout.Session.list_line_items(
+        session_id,
+        limit=100,
+        request_timeout=STRIPE_TIMEOUT_SECONDS,
+    )
+
+def _extract_email_from_session(session: stripe.checkout.Session) -> Optional[str]:
+    email = None
+    try:
+        cd = getattr(session, "customer_details", None)
+        if cd and getattr(cd, "email", None):
+            email = cd.email
+    except Exception:
+        pass
+    if not email:
+        try:
+            ce = getattr(session, "customer_email", None)
+            if ce:
+                email = ce
+        except Exception:
+            pass
+    return email.strip().lower() if email else None
+
+def _calc_credits_from_expanded_line_items(session: stripe.checkout.Session) -> Tuple[int, List[str]]:
+    credits_to_add = 0
+    seen_price_ids: List[str] = []
+
+    line_items = getattr(session, "line_items", None)
+    data = getattr(line_items, "data", None) if line_items else None
+    if not data:
+        return 0, []
+
+    for item in data:
+        qty = int(getattr(item, "quantity", 1) or 1)
+        price = getattr(item, "price", None)
+        price_id = getattr(price, "id", None) if price else None
+        if price_id:
+            seen_price_ids.append(price_id)
+            credits_to_add += int(PRICE_TO_CREDITS.get(price_id, 0)) * qty
+
+    return credits_to_add, seen_price_ids
+
+# ============================================================
 # ROUTES
 # ============================================================
 
@@ -245,6 +307,7 @@ def health():
         "ffmpeg": bool(FFMPEG),
         "ffprobe": bool(FFPROBE),
         "price_ids_loaded": list(PRICE_TO_CREDITS.keys()),
+        "stripe_request_timeout_seconds": STRIPE_TIMEOUT_SECONDS,
     }
 
 @app.get("/credits")
@@ -257,51 +320,60 @@ def credits(request: Request):
 def access_from_session(session_id: str):
     """
     Stripe Checkout session -> token + credits grant (idempotent per session_id)
+
+    HARD REQUIREMENTS:
+    - Must never hang: Stripe calls use request_timeout
+    - Must be idempotent per session_id
+    - Must never deadlock: use RLock
     """
+    if not session_id or not session_id.startswith("cs_"):
+        raise HTTPException(status_code=400, detail="Invalid session_id")
+
+    # 1) Retrieve session with hard timeout
     try:
-        session = stripe.checkout.Session.retrieve(session_id, expand=["line_items.data.price"])
+        session = _stripe_retrieve_session(session_id)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=502, detail=f"Stripe retrieve failed: {str(e)}")
 
-    email = None
-    if getattr(session, "customer_details", None) and session.customer_details and session.customer_details.email:
-        email = session.customer_details.email
-    elif getattr(session, "customer_email", None):
-        email = session.customer_email
-
+    # 2) Extract email
+    email = _extract_email_from_session(session)
     if not email:
         raise HTTPException(status_code=400, detail="No email found on Stripe session")
 
-    email = email.strip().lower()
     token = issue_token_for_email(email)
 
-    credits_to_add = 0
-    seen_price_ids: List[str] = []
+    # 3) Calculate credits
+    credits_to_add, seen_price_ids = _calc_credits_from_expanded_line_items(session)
 
-    try:
-        items = stripe.checkout.Session.list_line_items(session_id, limit=100)
-        for item in items.data:
-            price = getattr(item, "price", None)
-            price_id = getattr(price, "id", None) if price else None
-            qty = int(getattr(item, "quantity", 1) or 1)
-            if price_id:
-                seen_price_ids.append(price_id)
-                credits_to_add += int(PRICE_TO_CREDITS.get(price_id, 0)) * qty
-    except Exception:
-        credits_to_add = 0
-        seen_price_ids = []
+    # Fallback (also timed)
+    if credits_to_add == 0 and not seen_price_ids:
+        try:
+            items = _stripe_list_line_items(session_id)
+            for item in items.data:
+                price = getattr(item, "price", None)
+                price_id = getattr(price, "id", None) if price else None
+                qty = int(getattr(item, "quantity", 1) or 1)
+                if price_id:
+                    seen_price_ids.append(price_id)
+                    credits_to_add += int(PRICE_TO_CREDITS.get(price_id, 0)) * qty
+        except Exception:
+            credits_to_add = 0
+            seen_price_ids = []
 
+    # 4) Idempotent grant
     with _db_lock:
         grants = _load_grants_db()
         prev = grants.get(session_id)
 
         if prev is None:
             if credits_to_add > 0:
+                # Safe: add_credits uses same RLock (re-entrant)
                 add_credits(email, credits_to_add)
+
             grants[session_id] = {
                 "email": email,
-                "credits_added": credits_to_add,
-                "price_ids": seen_price_ids,
+                "credits_added": int(credits_to_add),
+                "price_ids": list(seen_price_ids),
                 "ts": int(time.time()),
             }
             _save_grants_db(grants)
@@ -313,12 +385,53 @@ def access_from_session(session_id: str):
     tool_url = f"{PUBLIC_BASE_URL}/tool.html?token={token}"
 
     return {
+        "status": "ok",
         "course_url": course_url,
         "tool_url": tool_url,
         "token": token,
-        "credits_added": credits_to_add,
+        "credits_added": int(credits_to_add),
         "price_ids": seen_price_ids,
     }
+@app.post("/checkout/create")
+def checkout_create(payload: Dict[str, Any] = Body(...)):
+    """
+    Create a Stripe Checkout Session and redirect user to access.html
+    Expected payload:
+      {
+        "price_id": "price_....",
+        "quantity": 1
+      }
+    """
+    price_id = payload.get("price_id")
+    quantity = int(payload.get("quantity", 1) or 1)
+
+    if not price_id or price_id not in PRICE_TO_CREDITS:
+        raise HTTPException(status_code=400, detail="Invalid or unsupported price_id")
+
+    try:
+        session = stripe.checkout.Session.create(
+            mode="payment",
+            line_items=[{
+                "price": price_id,
+                "quantity": quantity,
+            }],
+            success_url=f"{PUBLIC_BASE_URL}/access.html?session_id={{CHECKOUT_SESSION_ID}}",
+            cancel_url=f"{PUBLIC_BASE_URL}/",
+            request_timeout=STRIPE_TIMEOUT_SECONDS,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Stripe create failed: {str(e)}")
+
+    return {
+        "ok": True,
+        "checkout_url": session.url,
+        "session_id": session.id,
+    }
+
+# Optional: avoid 404 spam if Stripe hits a webhook URL you configured earlier
+@app.post("/stripe/webhook")
+async def stripe_webhook(_: Request):
+    return {"ok": True}
 
 # ============================================================
 # /upload route (registered safely)
@@ -334,7 +447,6 @@ except Exception:
 if not MULTIPART_OK:
     @app.post("/upload")
     async def upload_disabled():
-        # Keep the service alive; give a clear error
         raise HTTPException(
             status_code=503,
             detail='Upload disabled: missing dependency "python-multipart". Add it to requirements and redeploy.',
@@ -368,7 +480,6 @@ else:
         input_path = job_upload_dir / filename
 
         try:
-            # Save upload
             with input_path.open("wb") as f:
                 while True:
                     chunk = await file.read(1024 * 1024)
@@ -376,14 +487,12 @@ else:
                         break
                     f.write(chunk)
 
-            # If ffmpeg tools missing, fail cleanly (NO crash)
             if not (FFMPEG and FFPROBE):
                 raise HTTPException(
                     status_code=503,
                     detail="Video processing unavailable: ffmpeg/ffprobe not installed on the server.",
                 )
 
-            # Estimate clips -> require credits
             duration = probe_duration_seconds(input_path)
             estimated_clips = max(1, int(math.ceil(duration / float(clip_seconds))))
             current = get_credits(email)
@@ -393,19 +502,18 @@ else:
                     detail=f"Not enough credits. Need {estimated_clips}, have {current}.",
                 )
 
-            # Split
             clips = split_uniform(input_path, job_output_dir, clip_seconds=clip_seconds)
 
-            # Spend actual credits
             actual = len(clips)
             remaining = spend_credits(email, actual)
 
-            # Download URLs (served via backend /outputs mount)
+            backend_base = str(request.base_url).rstrip("/")
+
             out: List[Dict[str, str]] = []
             for p in clips:
                 out.append({
                     "filename": p.name,
-                    "url": f"{PUBLIC_BASE_URL}/outputs/{job_id}/{p.name}",
+                    "url": f"{backend_base}/outputs/{job_id}/{p.name}",
                 })
 
             return {
