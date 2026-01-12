@@ -40,6 +40,7 @@ PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://www.getmotionforge.com")
 
 # Stripe
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
+STRIPE_KEY_TYPE = "restricted" if (STRIPE_SECRET_KEY or "").startswith("rk_") else "standard"
 if not STRIPE_SECRET_KEY:
     raise RuntimeError("STRIPE_SECRET_KEY not set")
 
