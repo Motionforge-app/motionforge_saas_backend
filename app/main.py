@@ -373,6 +373,16 @@ def access_from_session(session_id: str):
             credits_to_add = 0
             seen_price_ids = []
 
+    # Metadata fallback (for price_data sessions where no saved Price exists)
+    if credits_to_add == 0:
+        try:
+            md = getattr(session, "metadata", None) or {}
+            md_credits = md.get("credits")
+            if md_credits is not None:
+                credits_to_add = int(md_credits)
+        except Exception:
+            pass
+
     # 4) Idempotent grant
     with _db_lock:
         grants = _load_grants_db()
