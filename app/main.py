@@ -421,8 +421,12 @@ def checkout_create(payload: Dict[str, Any] = Body(...)):
       { "pack": "creator" }  # tester | creator | refill250 | refill500
     """
     pack = (payload.get("pack") or "").strip().lower()
+    email = (payload.get("email") or "").strip().lower()
     if pack not in CHECKOUT_PACKS:
         raise HTTPException(status_code=400, detail="Invalid pack")
+
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="Valid email required")
 
     p = CHECKOUT_PACKS[pack]
 
@@ -437,6 +441,7 @@ def checkout_create(payload: Dict[str, Any] = Body(...)):
                 },
                 "quantity": 1,
             }],
+            customer_email=email,
             metadata={
                 "pack": pack,
                 "credits": str(int(p["credits"])),
