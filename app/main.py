@@ -566,3 +566,33 @@ else:
                 await file.close()
             except Exception:
                 pass
+
+# =========================
+# OWNER ADMIN: CREDITS TOP-UP
+# =========================
+from fastapi import Header, HTTPException
+
+ADMIN_API_KEY = os.getenv("ADMIN_API_KEY") or os.getenv("ADMIN_KEY")
+
+@app.post("/credits/admin/add")
+def credits_admin_add(email: str, amount: int, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
+    if not ADMIN_API_KEY:
+        raise HTTPException(status_code=500, detail="ADMIN_API_KEY not set on server")
+    if not x_admin_key or x_admin_key != ADMIN_API_KEY:
+        raise HTTPException(status_code=401, detail="admin key required")
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="amount must be > 0")
+
+    # Reuse your existing credit storage logic:
+    # This assumes you already have functions to get/set credits by email.
+    try:
+        current = get_credits_for_email(email)  # <-- must exist in your codebase
+        new_total = int(current) + int(amount)
+        set_credits_for_email(email, new_total) # <-- must exist in your codebase
+    except NameError:
+        raise HTTPException(status_code=500, detail="Missing get_credits_for_email / set_credits_for_email helpers in main.py")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"credit update failed: {e}")
+
+    return {"ok": True, "email": email, "added": amount, "credits": new_total}
+
