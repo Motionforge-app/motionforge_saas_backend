@@ -3,596 +3,559 @@ from __future__ import annotations
 import os
 import json
 import time
-import base64
-import math
 import uuid
-import shutil
+import base64
+import hashlib
 import subprocess
 from pathlib import Path
-from threading import RLock
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, List
 
-from fastapi import FastAPI, HTTPException, Request, Body
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, UploadFile, File, Form, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-import stripe
+# Optional: Stripe (keeps your existing flow working)
+try:
+    import stripe  # type: ignore
+except Exception:
+    stripe = None
 
-# ============================================================
-# CONFIG
-# ============================================================
 
 APP_NAME = "motionforge_saas_backend"
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
-UPLOADS_DIR = DATA_DIR / "uploads"
-OUTPUTS_DIR = DATA_DIR / "outputs"
-CREDITS_DB_PATH = DATA_DIR / "credits_db.json"
-GRANTS_DB_PATH = DATA_DIR / "grants_db.json"  # session_id -> grant record (idempotent)
+UPLOADS_DIR = BASE_DIR / "uploads"
+OUTPUTS_DIR = BASE_DIR / "outputs"
+DEMO_DIR = BASE_DIR / "demo_outputs"
+CREDITS_PATH = BASE_DIR / "credits.json"
 
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
-OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+for p in [DATA_DIR, UPLOADS_DIR, OUTPUTS_DIR, DEMO_DIR]:
+    p.mkdir(parents=True, exist_ok=True)
 
-PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://www.getmotionforge.com").rstrip("/")
+TOKEN_TTL_SECONDS = int(os.getenv("TOKEN_TTL_SECONDS", "86400"))
 
-# Stripe
-STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
-STRIPE_KEY_TYPE = "restricted" if (STRIPE_SECRET_KEY or "").startswith("rk_") else "standard"
-if not STRIPE_SECRET_KEY:
-    raise RuntimeError("STRIPE_SECRET_KEY not set")
-
-stripe.api_key = STRIPE_SECRET_KEY
-
-# Keep network behavior predictable
-stripe.max_network_retries = 0
-STRIPE_TIMEOUT_SECONDS = int(os.getenv("STRIPE_TIMEOUT_SECONDS", "15"))  # used as request_timeout
-
-# LIVE Price → credits mapping
-PRICE_TO_CREDITS: Dict[str, int] = {
-    # Tester pack $5 -> 10 credits (keep both variants)
-    "price_1Sjzy32L998MB1DP0pYyuyTY": 10,
-    "price_1Sjzy32L998MB1DPOpYyuyTY": 10,
-    # Creator Pack $97 -> 50 credits
-    "price_1Sd90A2L998MB1DPzBnPWnTA": 50,
-    # Refills
-    "price_1Sh7La2L998MB1DPtfvTv31N": 250,
-    "price_1Sh7Px2L998MB1DPQcQbGLfR": 500,
-}
-
-cors_origins = [
+# CORS
+DEFAULT_ORIGINS = [
     "https://www.getmotionforge.com",
     "https://getmotionforge.com",
 ]
+EXTRA = os.getenv("ALLOWED_ORIGINS", "").strip()
+if EXTRA:
+    # allow comma-separated
+    DEFAULT_ORIGINS += [o.strip() for o in EXTRA.split(",") if o.strip()]
 
-# ============================================================
-# APP
-# ============================================================
+# Stripe
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "").strip()
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "").strip()  # optional for future
+STRIPE_PRICE_ID_TO_CREDITS_RAW = os.getenv("STRIPE_PRICE_ID_TO_CREDITS", "").strip()
 
-app = FastAPI(title=APP_NAME)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=cors_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Serve generated clips via backend URL:
-# https://motionforgesaasbackend-production.up.railway.app/outputs/<job_id>/<filename>
-app.mount("/outputs", StaticFiles(directory=str(OUTPUTS_DIR)), name="outputs")
-
-# ============================================================
-# STORAGE (credits + idempotent grants)
-# ============================================================
-
-# MUST be re-entrant to avoid deadlocks when calling helpers inside lock
-_db_lock = RLock()
-
-def _read_json(path: Path, default: Any) -> Any:
-    if not path.exists():
-        return default
+PRICE_ID_TO_CREDITS: Dict[str, int] = {}
+if STRIPE_PRICE_ID_TO_CREDITS_RAW:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        PRICE_ID_TO_CREDITS = json.loads(STRIPE_PRICE_ID_TO_CREDITS_RAW)
+        # Ensure ints
+        PRICE_ID_TO_CREDITS = {k: int(v) for k, v in PRICE_ID_TO_CREDITS.items()}
     except Exception:
-        return default
+        PRICE_ID_TO_CREDITS = {}
 
-def _write_json(path: Path, data: Any) -> None:
+# Demo settings
+DEMO_MAX_CLIPS = 3
+DEMO_MAX_FILE_MB = int(os.getenv("DEMO_MAX_FILE_MB", "250"))  # keep sane
+DEMO_MAX_DURATION_SECONDS = int(os.getenv("DEMO_MAX_DURATION_SECONDS", "300"))  # 5 min
+DEMO_RATE_LIMIT_PER_HOUR = int(os.getenv("DEMO_RATE_LIMIT_PER_HOUR", "3"))
+
+# In-memory rate limiting (OK for soft-launch; reset on deploy)
+_demo_ip_hits: Dict[str, List[float]] = {}
+
+
+def _now() -> float:
+    return time.time()
+
+
+def _safe_json_read(path: Path, default: Any) -> Any:
+    try:
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return default
+
+
+def _safe_json_write(path: Path, data: Any) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
     tmp.replace(path)
 
-def _load_credits_db() -> Dict[str, int]:
-    data = _read_json(CREDITS_DB_PATH, {})
+
+def _load_credits() -> Dict[str, int]:
+    data = _safe_json_read(CREDITS_PATH, {})
     if not isinstance(data, dict):
         return {}
+    # Normalize
     out: Dict[str, int] = {}
     for k, v in data.items():
         try:
             out[str(k).lower()] = int(v)
         except Exception:
-            out[str(k).lower()] = 0
+            continue
     return out
 
-def _save_credits_db(db: Dict[str, int]) -> None:
-    _write_json(CREDITS_DB_PATH, db)
 
-def _load_grants_db() -> Dict[str, Dict[str, Any]]:
-    data = _read_json(GRANTS_DB_PATH, {})
-    if not isinstance(data, dict):
-        return {}
-    return data
+def _save_credits(d: Dict[str, int]) -> None:
+    _safe_json_write(CREDITS_PATH, d)
 
-def _save_grants_db(db: Dict[str, Dict[str, Any]]) -> None:
-    _write_json(GRANTS_DB_PATH, db)
 
-def get_credits(email: str) -> int:
-    email = email.strip().lower()
-    with _db_lock:
-        db = _load_credits_db()
-        return int(db.get(email, 0))
+def _b64url_encode(b: bytes) -> str:
+    return base64.urlsafe_b64encode(b).decode("utf-8").rstrip("=")
 
-def add_credits(email: str, amount: int) -> int:
-    email = email.strip().lower()
-    with _db_lock:
-        db = _load_credits_db()
-        db[email] = int(db.get(email, 0)) + int(amount)
-        _save_credits_db(db)
-        return int(db[email])
 
-def spend_credits(email: str, amount: int) -> int:
-    email = email.strip().lower()
-    with _db_lock:
-        db = _load_credits_db()
-        cur = int(db.get(email, 0))
-        if amount > cur:
-            raise HTTPException(status_code=402, detail="Not enough credits")
-        db[email] = cur - int(amount)
-        _save_credits_db(db)
-        return int(db[email])
+def _b64url_decode(s: str) -> bytes:
+    pad = "=" * (-len(s) % 4)
+    return base64.urlsafe_b64decode(s + pad)
 
-# ============================================================
-# TOKEN (mf_ base64url(json))
-# ============================================================
 
-def issue_token_for_email(email: str) -> str:
-    payload = {"email": email, "iat": int(time.time())}
-    token = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
-    return f"mf_{token}"
+def make_token(email: str) -> str:
+    payload = {"email": email.lower().strip(), "iat": int(_now())}
+    raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    return "mf_" + _b64url_encode(raw)
 
-def decode_token(token: str) -> str:
+
+def parse_token(token: str) -> Dict[str, Any]:
     if not token or not token.startswith("mf_"):
-        raise HTTPException(status_code=401, detail="Invalid token")
-    b64 = token[3:]
-    pad = "=" * ((4 - (len(b64) % 4)) % 4)
+        raise HTTPException(status_code=401, detail="invalid token")
+    raw = token[3:]
     try:
-        raw = base64.urlsafe_b64decode((b64 + pad).encode())
-        payload = json.loads(raw.decode())
-        email = (payload.get("email") or "").strip().lower()
-        if not email:
-            raise ValueError("missing email")
-        return email
+        payload = json.loads(_b64url_decode(raw).decode("utf-8"))
     except Exception:
-        raise HTTPException(status_code=401, detail="Invalid token")
+        raise HTTPException(status_code=401, detail="invalid token")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=401, detail="invalid token")
+    iat = int(payload.get("iat", 0))
+    if iat <= 0 or (_now() - iat) > TOKEN_TTL_SECONDS:
+        raise HTTPException(status_code=401, detail="token expired")
+    email = str(payload.get("email", "")).lower().strip()
+    if not email or "@" not in email:
+        raise HTTPException(status_code=401, detail="invalid token")
+    return payload
 
-def get_bearer_token(request: Request) -> str:
-    auth = request.headers.get("Authorization", "")
+
+def auth_email_from_request(request: Request) -> str:
+    auth = request.headers.get("authorization") or request.headers.get("Authorization") or ""
     if not auth.lower().startswith("bearer "):
-        raise HTTPException(status_code=401, detail="Missing bearer token")
-    return auth.split(" ", 1)[1].strip()
+        raise HTTPException(status_code=401, detail="missing bearer token")
+    token = auth.split(" ", 1)[1].strip()
+    payload = parse_token(token)
+    return payload["email"]
 
-# ============================================================
-# VIDEO TOOLS
-# ============================================================
-
-FFMPEG = shutil.which("ffmpeg")
-FFPROBE = shutil.which("ffprobe")
 
 def _run(cmd: List[str]) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
-def probe_duration_seconds(filepath: Path) -> float:
-    if not FFPROBE:
-        raise RuntimeError("ffprobe not available on this server")
+
+def ffprobe_duration_seconds(path: Path) -> float:
+    # returns duration in seconds (float)
     cmd = [
         "ffprobe",
         "-v", "error",
         "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1",
-        str(filepath),
+        "-of", "json",
+        str(path),
     ]
     p = _run(cmd)
     if p.returncode != 0:
-        raise RuntimeError(f"ffprobe failed: {p.stderr.strip()[:400]}")
-    return float(p.stdout.strip())
+        raise RuntimeError(f"ffprobe failed: {p.stderr[:4000]}")
+    data = json.loads(p.stdout)
+    dur = float(data["format"]["duration"])
+    return max(0.0, dur)
 
-def split_uniform(input_path: Path, out_dir: Path, clip_seconds: int) -> List[Path]:
-    if not FFMPEG:
-        raise RuntimeError("ffmpeg not available on this server")
 
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_pattern = out_dir / "clip_%03d.mp4"
+def ensure_ffmpeg_present() -> Dict[str, bool]:
+    def ok(binname: str) -> bool:
+        try:
+            p = _run([binname, "-version"])
+            return p.returncode == 0
+        except Exception:
+            return False
+    return {"ffmpeg": ok("ffmpeg"), "ffprobe": ok("ffprobe")}
+
+
+def _public_base(request: Request) -> str:
+    # Use request base; Railway typically provides correct host
+    return str(request.base_url).rstrip("/")
+
+
+def _hash_ip(ip: str) -> str:
+    return hashlib.sha256(ip.encode("utf-8")).hexdigest()[:16]
+
+
+def _client_ip(request: Request) -> str:
+    # Railway edge may provide X-Forwarded-For
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _demo_rate_limit_check(ip: str) -> None:
+    now = _now()
+    hits = _demo_ip_hits.get(ip, [])
+    # keep last hour
+    hits = [t for t in hits if (now - t) < 3600]
+    if len(hits) >= DEMO_RATE_LIMIT_PER_HOUR:
+        raise HTTPException(status_code=429, detail="Demo rate limit reached. Try again later.")
+    hits.append(now)
+    _demo_ip_hits[ip] = hits
+
+
+def _validate_demo_file(path: Path) -> None:
+    size_mb = path.stat().st_size / (1024 * 1024)
+    if size_mb > DEMO_MAX_FILE_MB:
+        raise HTTPException(status_code=400, detail=f"Demo max file size is {DEMO_MAX_FILE_MB}MB.")
+
+
+def ffmpeg_make_clip_with_watermark(src: Path, out_path: Path, start: int, length: int) -> None:
+    """
+    Create a clip and add a simple watermark using drawtext.
+    If drawtext fails on your ffmpeg build (rare), it falls back to no watermark.
+    """
+    # Attempt watermark
+    vf = (
+        "drawtext=text='MotionForge DEMO':"
+        "x=w-tw-18:y=18:"
+        "fontsize=24:fontcolor=white@0.75:"
+        "box=1:boxcolor=black@0.35:boxborderw=10"
+    )
 
     cmd = [
         "ffmpeg",
         "-y",
-        "-i", str(input_path),
-        "-c", "copy",
-        "-map", "0",
-        "-f", "segment",
-        "-reset_timestamps", "1",
-        "-segment_time", str(int(clip_seconds)),
-        str(out_pattern),
+        "-ss", str(start),
+        "-t", str(length),
+        "-i", str(src),
+        "-vf", vf,
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "23",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-movflags", "+faststart",
+        str(out_path),
+    ]
+    p = _run(cmd)
+    if p.returncode == 0 and out_path.exists():
+        return
+
+    # Fallback: no watermark
+    cmd2 = [
+        "ffmpeg",
+        "-y",
+        "-ss", str(start),
+        "-t", str(length),
+        "-i", str(src),
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "23",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-movflags", "+faststart",
+        str(out_path),
+    ]
+    p2 = _run(cmd2)
+    if p2.returncode != 0:
+        raise RuntimeError(f"ffmpeg failed: {p.stderr[:1200]} | fallback: {p2.stderr[:1200]}")
+
+
+def ffmpeg_make_clip(src: Path, out_path: Path, start: int, length: int) -> None:
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-ss", str(start),
+        "-t", str(length),
+        "-i", str(src),
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "23",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-movflags", "+faststart",
+        str(out_path),
     ]
     p = _run(cmd)
     if p.returncode != 0:
-        raise RuntimeError(f"ffmpeg failed: {p.stderr.strip()[:800]}")
+        raise RuntimeError(f"ffmpeg failed: {p.stderr[:2000]}")
 
-    clips = sorted(out_dir.glob("clip_*.mp4"))
-    if not clips:
-        raise RuntimeError("No clips produced")
-    return clips
 
-# ============================================================
-# STRIPE HELPERS (timeouts!)
-# ============================================================
+app = FastAPI(title=APP_NAME, version="0.1.0")
 
-def _stripe_retrieve_session(session_id: str) -> stripe.checkout.Session:
-    """
-    IMPORTANT: Stripe Python uses request_timeout (not timeout).
-    This prevents hanging requests.
-    """
-    return stripe.checkout.Session.retrieve(
-        session_id,
-        expand=["line_items.data.price", "customer_details"],
-    )
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=DEFAULT_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-def _stripe_list_line_items(session_id: str) -> Any:
-    return stripe.checkout.Session.list_line_items(
-        session_id,
-        limit=100,
-    )
+# Static outputs (existing behavior)
+app.mount("/outputs", StaticFiles(directory=str(OUTPUTS_DIR)), name="outputs")
+app.mount("/demo_outputs", StaticFiles(directory=str(DEMO_DIR)), name="demo_outputs")
 
-def _extract_email_from_session(session: stripe.checkout.Session) -> Optional[str]:
-    email = None
-    try:
-        cd = getattr(session, "customer_details", None)
-        if cd and getattr(cd, "email", None):
-            email = cd.email
-    except Exception:
-        pass
-    if not email:
-        try:
-            ce = getattr(session, "customer_email", None)
-            if ce:
-                email = ce
-        except Exception:
-            pass
-    return email.strip().lower() if email else None
-
-def _calc_credits_from_expanded_line_items(session: stripe.checkout.Session) -> Tuple[int, List[str]]:
-    credits_to_add = 0
-    seen_price_ids: List[str] = []
-
-    line_items = getattr(session, "line_items", None)
-    data = getattr(line_items, "data", None) if line_items else None
-    if not data:
-        return 0, []
-
-    for item in data:
-        qty = int(getattr(item, "quantity", 1) or 1)
-        price = getattr(item, "price", None)
-        price_id = getattr(price, "id", None) if price else None
-        if price_id:
-            seen_price_ids.append(price_id)
-            credits_to_add += int(PRICE_TO_CREDITS.get(price_id, 0)) * qty
-
-    return credits_to_add, seen_price_ids
-
-# ============================================================
-# ROUTES
-# ============================================================
 
 @app.get("/health")
-def health():
+def health() -> Dict[str, Any]:
+    ff = ensure_ffmpeg_present()
+    stripe_mode = "disabled"
+    if stripe and STRIPE_SECRET_KEY:
+        stripe_mode = "live" if STRIPE_SECRET_KEY.startswith("sk_live") else "test"
     return {
         "status": "ok",
         "service": APP_NAME,
-        "stripe_mode": "live",
-        "cors_origins": cors_origins,
-        "ffmpeg": bool(FFMPEG),
-        "ffprobe": bool(FFPROBE),
-        "price_ids_loaded": list(PRICE_TO_CREDITS.keys()),
-        "stripe_request_timeout_seconds": STRIPE_TIMEOUT_SECONDS,
+        "stripe_mode": stripe_mode,
+        "refill_price_ids_loaded": sorted(list(PRICE_ID_TO_CREDITS.keys())),
+        "cors_origins": DEFAULT_ORIGINS,
+        "token_ttl_seconds": TOKEN_TTL_SECONDS,
+        "ffmpeg": ff,
+        "demo": {
+            "max_clips": DEMO_MAX_CLIPS,
+            "max_file_mb": DEMO_MAX_FILE_MB,
+            "max_duration_seconds": DEMO_MAX_DURATION_SECONDS,
+            "rate_limit_per_hour": DEMO_RATE_LIMIT_PER_HOUR,
+        },
     }
-@app.get("/stripe/account")
-def stripe_account():
-    try:
-        acct = stripe.Account.retrieve()
-        return {
-            "ok": True,
-            "account_id": getattr(acct, "id", None),
-            "country": getattr(acct, "country", None),
-            "default_currency": getattr(acct, "default_currency", None),
-"key_type": STRIPE_KEY_TYPE,
 
-        }
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Stripe account retrieve failed: {str(e)}")
 
 @app.get("/credits")
-def credits(request: Request):
-    token = get_bearer_token(request)
-    email = decode_token(token)
-    return {"ok": True, "email": email, "credits": get_credits(email)}
+def credits(request: Request) -> Dict[str, Any]:
+    email = auth_email_from_request(request)
+    d = _load_credits()
+    return {"ok": True, "email": email, "credits": int(d.get(email, 0))}
 
-@app.get("/auth/access-from-session")
-def access_from_session(session_id: str):
+
+@app.post("/upload")
+async def upload(
+    request: Request,
+    file: UploadFile = File(...),
+    clip_seconds: int = Form(...),
+) -> Dict[str, Any]:
     """
-    Stripe Checkout session -> token + credits grant (idempotent per session_id)
-
-    HARD REQUIREMENTS:
-    - Must never hang: Stripe calls use request_timeout
-    - Must be idempotent per session_id
-    - Must never deadlock: use RLock
+    Paid tool upload: spends 1 credit per upload and returns output URLs.
     """
-    if not session_id or not session_id.startswith("cs_"):
-        raise HTTPException(status_code=400, detail="Invalid session_id")
+    email = auth_email_from_request(request)
 
-    # 1) Retrieve session with hard timeout
+    clip_seconds = int(clip_seconds)
+    if clip_seconds <= 0 or clip_seconds > 120:
+        raise HTTPException(status_code=400, detail="clip_seconds must be between 1 and 120")
+
+    d = _load_credits()
+    current = int(d.get(email, 0))
+    if current <= 0:
+        raise HTTPException(status_code=402, detail="insufficient credits")
+
+    job_id = str(uuid.uuid4())
+    in_path = UPLOADS_DIR / f"{job_id}_{file.filename}"
+    with in_path.open("wb") as f:
+        f.write(await file.read())
+
+    # Spend 1 credit per job
+    d[email] = current - 1
+    _save_credits(d)
+
+    # Create job output dir
+    out_dir = OUTPUTS_DIR / job_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Determine duration and clip count (cap to 30)
     try:
-        session = _stripe_retrieve_session(session_id)
+        duration = ffprobe_duration_seconds(in_path)
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Stripe retrieve failed: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Could not read video: {e}")
 
-    # 2) Extract email
-    email = _extract_email_from_session(session)
-    if not email:
-        raise HTTPException(status_code=400, detail="No email found on Stripe session")
+    n = int(duration // clip_seconds)
+    if n <= 0:
+        n = 1
+    n = min(n, 30)
 
-    token = issue_token_for_email(email)
-
-    # 3) Calculate credits
-    credits_to_add, seen_price_ids = _calc_credits_from_expanded_line_items(session)
-
-    # Fallback (also timed)
-    if credits_to_add == 0 and not seen_price_ids:
+    # Create clips sequentially
+    clips: List[str] = []
+    for i in range(n):
+        start = i * clip_seconds
+        out_file = out_dir / f"clip_{i:03d}.mp4"
         try:
-            items = _stripe_list_line_items(session_id)
-            for item in items.data:
-                price = getattr(item, "price", None)
-                price_id = getattr(price, "id", None) if price else None
-                qty = int(getattr(item, "quantity", 1) or 1)
-                if price_id:
-                    seen_price_ids.append(price_id)
-                    credits_to_add += int(PRICE_TO_CREDITS.get(price_id, 0)) * qty
-        except Exception:
-            credits_to_add = 0
-            seen_price_ids = []
-
-    # Metadata fallback (for price_data sessions where no saved Price exists)
-    if credits_to_add == 0:
-        try:
-            md = getattr(session, "metadata", None) or {}
-            md_credits = md.get("credits")
-            if md_credits is not None:
-                credits_to_add = int(md_credits)
-        except Exception:
-            pass
-
-    # 4) Idempotent grant
-    with _db_lock:
-        grants = _load_grants_db()
-        prev = grants.get(session_id)
-
-        if prev is None:
-            if credits_to_add > 0:
-                # Safe: add_credits uses same RLock (re-entrant)
-                add_credits(email, credits_to_add)
-
-            grants[session_id] = {
-                "email": email,
-                "credits_added": int(credits_to_add),
-                "price_ids": list(seen_price_ids),
-                "ts": int(time.time()),
-            }
-            _save_grants_db(grants)
-        else:
-            credits_to_add = int(prev.get("credits_added", 0))
-            seen_price_ids = list(prev.get("price_ids", []))
-
-    course_url = f"{PUBLIC_BASE_URL}/course.html?token={token}&session_id={session_id}"
-    tool_url = f"{PUBLIC_BASE_URL}/tool.html?token={token}"
+            ffmpeg_make_clip(in_path, out_file, start=start, length=clip_seconds)
+        except Exception as e:
+            # Stop early if ffmpeg fails mid-way
+            break
+        clips.append(f"{_public_base(request)}/outputs/{job_id}/clip_{i:03d}.mp4")
 
     return {
-        "status": "ok",
+        "ok": True,
+        "job_id": job_id,
+        "credits_spent": 1,
+        "credits_remaining": int(d[email]),
+        "clips": clips,
+    }
+
+
+@app.get("/stripe/account")
+def stripe_account() -> Dict[str, Any]:
+    if not stripe or not STRIPE_SECRET_KEY:
+        raise HTTPException(status_code=400, detail="stripe not configured")
+    stripe.api_key = STRIPE_SECRET_KEY
+    acct = stripe.Account.retrieve()
+    return {
+        "id": acct.get("id"),
+        "country": acct.get("country"),
+        "default_currency": acct.get("default_currency"),
+        "charges_enabled": acct.get("charges_enabled"),
+        "payouts_enabled": acct.get("payouts_enabled"),
+    }
+
+
+@app.get("/auth/access-from-session")
+def access_from_session(session_id: str) -> Dict[str, Any]:
+    """
+    Stripe Checkout session -> token + credits grant (idempotent-ish).
+    Used by access.html after payment.
+    """
+    if not stripe or not STRIPE_SECRET_KEY:
+        raise HTTPException(status_code=400, detail="stripe not configured")
+
+    stripe.api_key = STRIPE_SECRET_KEY
+
+    try:
+        sess = stripe.checkout.Session.retrieve(
+            session_id,
+            expand=["line_items.data.price", "customer_details"],
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"stripe error: {e}")
+
+    email = ""
+    cd = sess.get("customer_details") or {}
+    email = (cd.get("email") or "").strip().lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="missing customer email in session")
+
+    # Sum credits from purchased prices
+    credits_to_add = 0
+    li = sess.get("line_items") or {}
+    data = li.get("data") or []
+    for item in data:
+        price = (item.get("price") or {})
+        price_id = price.get("id")
+        qty = int(item.get("quantity") or 1)
+        if price_id and price_id in PRICE_ID_TO_CREDITS:
+            credits_to_add += int(PRICE_ID_TO_CREDITS[price_id]) * qty
+
+    if credits_to_add <= 0:
+        # Keep flow usable: still issue token, but no credits
+        credits_to_add = 0
+
+    # Grant credits
+    d = _load_credits()
+    d[email] = int(d.get(email, 0)) + credits_to_add
+    _save_credits(d)
+
+    token = make_token(email)
+
+    # Frontend URLs (keep your existing pattern)
+    course_url = f"https://www.getmotionforge.com/course.html?token={token}"
+    tool_url = f"https://www.getmotionforge.com/tool.html?token={token}"
+
+    return {
+        "ok": True,
+        "email": email,
+        "credits_added": credits_to_add,
+        "token": token,
         "course_url": course_url,
         "tool_url": tool_url,
-        "token": token,
-        "credits_added": int(credits_to_add),
-        "price_ids": seen_price_ids,
     }
-# Fixed pack catalog (do NOT trust client-sent amounts/credits)
-CHECKOUT_PACKS: Dict[str, Dict[str, Any]] = {
-    "tester":    {"name": "MotionForge — Tester Pack", "currency": "usd", "amount_cents": 500,   "credits": 10},
-    "creator":   {"name": "MotionForge — Creator Pack (50 Credits + Course)", "currency": "usd", "amount_cents": 9700,  "credits": 50},
-    "refill250": {"name": "MotionForge — Credit Refill 250", "currency": "usd", "amount_cents": 29700, "credits": 250},
-    "refill500": {"name": "MotionForge — Credit Refill 500", "currency": "usd", "amount_cents": 49700, "credits": 500},
-}
 
-@app.post("/checkout/create")
-def checkout_create(payload: Dict[str, Any] = Body(...)):
+
+# =========================
+# DEMO ENDPOINT (NEW)
+# =========================
+@app.post("/demo/upload")
+async def demo_upload(
+    request: Request,
+    file: UploadFile = File(...),
+    clip_seconds: int = Form(...),
+) -> Dict[str, Any]:
     """
-    Create a Stripe Checkout Session (no dependency on existing Price IDs).
-    Expected payload:
-      { "pack": "creator" }  # tester | creator | refill250 | refill500
+    Demo mode:
+    - No auth
+    - Rate-limited per IP
+    - Max duration and size caps
+    - Generates exactly up to 3 clips (watermarked)
+    - Returns URLs under /demo_outputs/...
     """
-    pack = (payload.get("pack") or "").strip().lower()
-    email = (payload.get("email") or "").strip().lower()
-    if pack not in CHECKOUT_PACKS:
-        raise HTTPException(status_code=400, detail="Invalid pack")
+    ip = _client_ip(request)
+    _demo_rate_limit_check(ip)
 
-    if not email or "@" not in email:
-        raise HTTPException(status_code=400, detail="Valid email required")
+    clip_seconds = int(clip_seconds)
+    if clip_seconds <= 0 or clip_seconds > 30:
+        raise HTTPException(status_code=400, detail="clip_seconds must be between 1 and 30 for demo")
 
-    p = CHECKOUT_PACKS[pack]
+    demo_id = f"demo_{uuid.uuid4().hex[:10]}"
+    in_path = DEMO_DIR / f"{demo_id}_{file.filename}"
+    with in_path.open("wb") as f:
+        f.write(await file.read())
 
+    _validate_demo_file(in_path)
+
+    # Validate duration
     try:
-        session = stripe.checkout.Session.create(
-            mode="payment",
-            line_items=[{
-                "price_data": {
-                    "currency": p["currency"],
-                    "unit_amount": int(p["amount_cents"]),
-                    "product_data": {"name": p["name"]},
-                },
-                "quantity": 1,
-            }],
-            customer_email=email,
-            metadata={
-                "pack": pack,
-                "credits": str(int(p["credits"])),
-            },
-            success_url=f"{PUBLIC_BASE_URL}/access.html?session_id={{CHECKOUT_SESSION_ID}}",
-            cancel_url=f"{PUBLIC_BASE_URL}/",
-        )
+        duration = ffprobe_duration_seconds(in_path)
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Stripe create failed: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Could not read video: {e}")
 
-    return {"ok": True, "checkout_url": session.url, "session_id": session.id}
-
-@app.post("/stripe/webhook")
-async def stripe_webhook(_: Request):
-    return {"ok": True}
-
-# ============================================================
-# /upload route (registered safely)
-#   - If python-multipart missing, we still start the app and return 503 instead of crashing.
-# ============================================================
-
-try:
-    import multipart  # noqa: F401
-    MULTIPART_OK = True
-except Exception:
-    MULTIPART_OK = False
-
-if not MULTIPART_OK:
-    @app.post("/upload")
-    async def upload_disabled():
+    if duration <= 0.5:
+        raise HTTPException(status_code=400, detail="Video duration too short.")
+    if duration > DEMO_MAX_DURATION_SECONDS:
         raise HTTPException(
-            status_code=503,
-            detail='Upload disabled: missing dependency "python-multipart". Add it to requirements and redeploy.',
+            status_code=400,
+            detail=f"Demo max duration is {DEMO_MAX_DURATION_SECONDS} seconds."
         )
-else:
-    from fastapi import UploadFile, File, Form  # only import when safe
 
-    @app.post("/upload")
-    async def upload(
-        request: Request,
-        file: UploadFile = File(...),
-        clip_seconds: int = Form(30),
-    ):
-        """
-        Uploads a video. If ffmpeg/ffprobe are available: splits into clips and deducts credits.
-        If ffmpeg/ffprobe are missing: stores file and returns a clear 503 (no crash).
-        """
-        token = get_bearer_token(request)
-        email = decode_token(token)
+    # Create output folder
+    out_dir = DEMO_DIR / demo_id
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-        if clip_seconds < 10 or clip_seconds > 180:
-            raise HTTPException(status_code=400, detail="clip_seconds must be between 10 and 180")
+    # Choose 3 evenly spread start times
+    # Ensure start+clip_seconds fits
+    max_start = max(0, int(duration) - clip_seconds)
+    if max_start <= 0:
+        starts = [0]
+    else:
+        starts = [
+            0,
+            max_start // 2,
+            max_start,
+        ]
+    starts = starts[:DEMO_MAX_CLIPS]
 
-        job_id = uuid.uuid4().hex
-        job_upload_dir = UPLOADS_DIR / job_id
-        job_output_dir = OUTPUTS_DIR / job_id
-        job_upload_dir.mkdir(parents=True, exist_ok=True)
-        job_output_dir.mkdir(parents=True, exist_ok=True)
-
-        filename = file.filename or "input.mp4"
-        input_path = job_upload_dir / filename
-
+    clips: List[Dict[str, Any]] = []
+    for i, start in enumerate(starts):
+        out_file = out_dir / f"demo_clip_{i+1:02d}.mp4"
         try:
-            with input_path.open("wb") as f:
-                while True:
-                    chunk = await file.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    f.write(chunk)
+            ffmpeg_make_clip_with_watermark(in_path, out_file, start=int(start), length=clip_seconds)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Demo rendering failed: {e}")
 
-            if not (FFMPEG and FFPROBE):
-                raise HTTPException(
-                    status_code=503,
-                    detail="Video processing unavailable: ffmpeg/ffprobe not installed on the server.",
-                )
+        clips.append({
+            "url": f"{_public_base(request)}/demo_outputs/{demo_id}/demo_clip_{i+1:02d}.mp4",
+            "watermarked": True,
+        })
 
-            duration = probe_duration_seconds(input_path)
-            estimated_clips = max(1, int(math.ceil(duration / float(clip_seconds))))
-            current = get_credits(email)
-            if current < estimated_clips:
-                raise HTTPException(
-                    status_code=402,
-                    detail=f"Not enough credits. Need {estimated_clips}, have {current}.",
-                )
+    return {
+        "ok": True,
+        "demo_id": demo_id,
+        "ip_hash": _hash_ip(ip),
+        "clips": clips,
+    }
 
-            clips = split_uniform(input_path, job_output_dir, clip_seconds=clip_seconds)
 
-            actual = len(clips)
-            remaining = spend_credits(email, actual)
-
-            backend_base = str(request.base_url).rstrip("/")
-
-            out: List[Dict[str, str]] = []
-            for p in clips:
-                out.append({
-                    "filename": p.name,
-                    "url": f"{backend_base}/outputs/{job_id}/{p.name}",
-                })
-
-            return {
-                "ok": True,
-                "job_id": job_id,
-                "email": email,
-                "clip_seconds": clip_seconds,
-                "credits_spent": actual,
-                "credits_remaining": remaining,
-                "clips": out,
-            }
-
-        finally:
-            try:
-                await file.close()
-            except Exception:
-                pass
-
-# =========================
-# OWNER ADMIN: CREDITS TOP-UP
-# =========================
-from fastapi import Header, HTTPException
-
-ADMIN_API_KEY = os.getenv("ADMIN_API_KEY") or os.getenv("ADMIN_KEY")
-
-@app.post("/credits/admin/add")
-def credits_admin_add(email: str, amount: int, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
-    if not ADMIN_API_KEY:
-        raise HTTPException(status_code=500, detail="ADMIN_API_KEY not set on server")
-    if not x_admin_key or x_admin_key != ADMIN_API_KEY:
-        raise HTTPException(status_code=401, detail="admin key required")
-    if amount <= 0:
-        raise HTTPException(status_code=400, detail="amount must be > 0")
-
-    # Reuse your existing credit storage logic:
-    # This assumes you already have functions to get/set credits by email.
-    try:
-        current = get_credits_for_email(email)  # <-- must exist in your codebase
-        new_total = int(current) + int(amount)
-        set_credits_for_email(email, new_total) # <-- must exist in your codebase
-    except NameError:
-        raise HTTPException(status_code=500, detail="Missing get_credits_for_email / set_credits_for_email helpers in main.py")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"credit update failed: {e}")
-
-    return {"ok": True, "email": email, "added": amount, "credits": new_total}
-
+@app.exception_handler(HTTPException)
+async def http_exception_handler(_: Request, exc: HTTPException):
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
